@@ -26,6 +26,7 @@
 #include <esp_chip_info.h>
 #include <esp_app_format.h>
 #include <esp_ota_ops.h>
+#include "dbb_brain.h"
 #include <esp_partition.h>
 #include "esp_http_server.h"
 #include "esp_system.h"
@@ -986,7 +987,7 @@ esp_err_t start_rest_server(const char *base_path) {
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
-    config.max_uri_handlers = 20;
+    config.max_uri_handlers = 24;
     config.stack_size = DB_HTTP_SERVER_STACK_SIZE;
     config.max_open_sockets = 12;      // raised with LWIP_MAX_SOCKETS=24 (BLE off freed the RAM) — comfortable multi-browser headroom
     config.lru_purge_enable = true;    // pool full -> recycle the stalest idle connection instead of rejecting (fixes the blank page on a 2nd/3rd client)
@@ -1127,6 +1128,11 @@ esp_err_t start_rest_server(const char *base_path) {
             .user_ctx = rest_context
     };
     httpd_register_uri_handler(server, &sonar_log_delete_uri);
+
+    /* DBB Companion brain: let a linked private brain register its own routes
+     * (e.g. the monitor page) BEFORE the catch-all file handler below. No-op in
+     * the open base (weak stub). */
+    dbb_brain_register_http(server);
 
     /* URI handler for getting web server files */
     httpd_uri_t common_get_uri = {

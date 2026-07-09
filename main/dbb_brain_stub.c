@@ -19,3 +19,7 @@ __attribute__((weak)) void dbb_brain_handle_mavlink(const fmav_message_t *msg, b
     (void)msg;
     (void)from_serial;
 }
+
+__attribute__((weak)) void dbb_brain_register_http(void *server) {
+    (void)server;
+}

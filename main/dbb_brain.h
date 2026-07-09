@@ -28,6 +28,15 @@ void dbb_brain_init(void);
  */
 void dbb_brain_handle_mavlink(const fmav_message_t *msg, bool from_serial);
 
+/**
+ * Called once from the web server (start_rest_server) so a linked brain can
+ * register its own HTTP routes (e.g. a private monitor page) before the
+ * catch-all file handler. `server` is an esp_http_server httpd_handle_t, kept
+ * as void* here so the open-base header carries no HTTP dependency. No-op stub
+ * in the public build.
+ */
+void dbb_brain_register_http(void *server);
+
 #ifdef __cplusplus
 }
 #endif
