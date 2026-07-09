@@ -13,10 +13,6 @@ set(SRCS
         dbb_brain_stub.c
 )
 
-if(CONFIG_BT_ENABLED)
-    list(APPEND SRCS db_ble.c)
-endif()
-
 idf_component_register(SRCS ${SRCS}
         INCLUDE_DIRS ".")
 

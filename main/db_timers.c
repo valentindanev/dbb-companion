@@ -153,9 +153,7 @@ void db_timer_mavlink_radiostatus_callback(TimerHandle_t pxTimer) {
   bool runtime_ap = db_wifi_runtime_has_ap();
   // ESP32s that are connected to a flight controller via UART will send
   // RADIO_STATUS messages to the GND
-  if (runtime_sta ||
-      DB_PARAM_RADIO_MODE == DB_BLUETOOTH_MODE) {
-    // ToDo: For BLE only the last connected client is considered.
+  if (runtime_sta) {
     fmav_radio_status_t payload_r = {
         .fixed = 0,
         .txbuf = 0,

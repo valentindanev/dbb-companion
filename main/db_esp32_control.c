@@ -38,9 +38,6 @@
 #include "db_protocol.h"
 #include "tcp_server.h"
 #include "db_esp32_control.h"
-#ifdef CONFIG_BT_ENABLED
-#include "db_ble.h"
-#endif
 #include <db_parameters.h>
 #include "main.h"
 #include "db_serial.h"
@@ -254,22 +251,7 @@ void db_send_to_all_udp_clients(const uint8_t *data, uint data_length) {
  * @param data_length Length of payload to send
  */
 void db_send_to_all_clients(int tcp_clients[], udp_conn_list_t *n_udp_conn_list, uint8_t data[], uint16_t data_length) {
-#ifdef CONFIG_BT_ENABLED
-    db_ble_queue_event_t bleData;
-#endif
     switch (DB_PARAM_RADIO_MODE) {
-        case DB_BLUETOOTH_MODE:
-#ifdef CONFIG_BT_ENABLED
-            bleData.data = malloc(data_length);
-            bleData.data_len = data_length;
-            memcpy(bleData.data, data, bleData.data_len);
-            if (xQueueSend(db_uart_read_queue_ble, &bleData, portMAX_DELAY) != pdPASS) {
-                ESP_LOGE(TAG, "Failed to send BLE data to queue");
-                free(bleData.data);
-            }
-#endif
-            break;
-
         default:
             // Other modes (WiFi Modes using TCP/UDP)
             db_send_to_all_tcp_clients(tcp_clients, data, data_length);
@@ -285,22 +267,7 @@ void db_send_to_all_clients(int tcp_clients[], udp_conn_list_t *n_udp_conn_list,
  * @param data_length
  */
 void db_send_to_all_radio_clients(uint8_t data[], uint16_t data_length) {
-#ifdef CONFIG_BT_ENABLED
-    db_ble_queue_event_t bleData;
-#endif
     switch (DB_PARAM_RADIO_MODE) {
-        case DB_BLUETOOTH_MODE:
-#ifdef CONFIG_BT_ENABLED
-            bleData.data = malloc(data_length);
-            bleData.data_len = data_length;
-            memcpy(bleData.data, data, bleData.data_len);
-            if (xQueueSend(db_uart_read_queue_ble, &bleData, portMAX_DELAY) != pdPASS) {
-                ESP_LOGE(TAG, "Failed to send BLE data to queue");
-                free(bleData.data);
-            }
-#endif
-            break;
-
         default:
             // Other modes (WiFi Modes using TCP/UDP)
             db_send_to_all_tcp_clients(connected_tcp_clients, data, data_length);
@@ -606,73 +573,6 @@ _Noreturn void control_module_udp_tcp() {
     vTaskDelete(NULL);
 }
 
-#ifdef CONFIG_BT_ENABLED
-
-_Noreturn void control_module_ble() {
-    ESP_LOGI(TAG, "Starting control module (Bluetooth)");
-
-    /* Initialize error code as failed, because UART is not initialized*/
-    esp_err_t serial_socket = ESP_FAIL;
-
-    /* open serial socket for comms with FC or GCS */
-    serial_socket = open_serial_socket();
-    if (serial_socket == ESP_FAIL) {
-        ESP_LOGE(TAG, "UART socket not opened. Aborting start of control module.");
-        vTaskDelete(NULL);
-    }
-#ifdef CONFIG_DB_SERIAL_OPTION_JTAG
-    else {
-      db_jtag_serial_info_print();
-    }
-#endif
-
-    uint8_t msp_message_buffer[UART_BUF_SIZE];
-    uint8_t serial_buffer[DB_PARAM_SERIAL_PACK_SIZE];
-    db_ble_queue_event_t bleData;
-    uint transparent_buff_pos = 0;
-    uint delay_timer_cnt = 0;
-
-    /* Event Loop */
-    while (1) {
-        /* Read UART and send data to BLE */
-        read_process_serial_link(NULL,                  // NULL, not using TCP
-                                 &transparent_buff_pos, // transparent buffer position
-                                 msp_message_buffer,    // serial msg buffer
-                                 serial_buffer          // serial buffer
-        );
-
-        if (db_uart_write_queue_ble != NULL && xQueueReceive(db_uart_write_queue_ble, &bleData, 1) == pdTRUE) {
-            if (DB_PARAM_SERIAL_PROTO == DB_SERIAL_PROTOCOL_MAVLINK) {
-                // Parse, so we can listen in and react to certain messages - function will send parsed messages to serial link.
-                // We cannot write to serial first since we might inject packets and do not know when to do so to not "destroy" an
-                // existing packet
-                db_parse_mavlink_from_radio(NULL, NULL, bleData.data, bleData.data_len);
-            } else {
-                // no parsing with any other protocol - transparent here - just pass through
-                write_to_serial(bleData.data, bleData.data_len);
-            }
-            free(bleData.data);
-        } else {
-            if (db_uart_write_queue_ble == NULL)
-                ESP_LOGE(TAG, "db_uart_write_queue is NULL!");
-            // no new data available to be sent via serial link do nothing
-        }
-
-        /**Yield to the scheduler if delay_timer_cnt reaches 5000,allowing other
-         * tasks to execute and preventing starvation.
-         */
-        if (delay_timer_cnt == 5000) {
-            vTaskDelay(10 / portTICK_PERIOD_MS);
-            delay_timer_cnt = 0;
-        } else {
-            delay_timer_cnt++;
-        }
-    }
-    vTaskDelete(NULL);
-}
-
-#endif
-
 /**
  * @brief DroneBridge control module implementation for a ESP32 device. Bidirectional link between FC and ground. Can
  * handle MSPv1, MSPv2, LTM and MAVLink.
@@ -681,20 +581,6 @@ _Noreturn void control_module_ble() {
  */
 void db_start_control_module() {
     switch (DB_PARAM_RADIO_MODE) {
-        case DB_BLUETOOTH_MODE:
-#ifdef CONFIG_BT_ENABLED
-            xTaskCreate(&control_module_ble,   /**< Task function for Bluetooth BLE communication */
-                        "control_bluetooth",      /**< Task name (for debugging) */
-                        40960,                /**< Stack size (in bytes) */
-                        NULL,                 /**< Task parameters (unused) */
-                        5,                       /**< Task priority */
-                        NULL                 /**< Task handle (unused) */
-            );
-#else
-            ESP_LOGE(TAG, "Bluetooth is not enabled. Aborting start of control module.");
-#endif
-            break;
-
         default:
             xTaskCreate(&control_module_udp_tcp,  /**< Task function for UDP/TCP communication */
                         "control_wifi",              /**< Task name (for debugging) */

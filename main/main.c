@@ -54,12 +54,6 @@
 
 #include <db_timers.h>
 
-#ifdef CONFIG_BT_ENABLED
-
-#include "db_ble.h"
-
-#endif
-
 #define NVS_NAMESPACE "settings"
 
 /* used to reset ESP to defaults and force restart or to reset the mode to
@@ -822,12 +816,7 @@ void db_set_radio_status(uint8_t enable_wifi) {
                      // make sure all things are set up right
     } else if (!enable_wifi && !DB_RADIO_IS_OFF) {
       ESP_LOGI(TAG, "Disabling Wi-Fi/BLE");
-      if (DB_PARAM_RADIO_MODE == DB_BLUETOOTH_MODE) {
-#ifdef CONFIG_BT_ENABLED
-        db_ble_deinit(); // disable BLE
-#endif
-        DB_RADIO_IS_OFF = true;
-      } else {
+      {
         if (esp_wifi_stop() == ESP_OK) { // disable WiFi
           DB_RADIO_IS_OFF = true;
         } else {
@@ -1148,29 +1137,6 @@ void app_main() {
                                    ? DB_SONAR_SOURCE_HARDWIRED
                                    : DB_SONAR_SOURCE_NONE;
     }
-    break;
-  case DB_BLUETOOTH_MODE:
-#ifdef CONFIG_BT_ENABLED
-    db_init_wifi_apmode(
-        DB_WIFI_MODE_AP); // WiFi & BLE co-existence to enable webinterface
-    db_ble_queue_init();
-    db_ble_init();
-    hardwired_sonar_selected = DB_PARAM_HARDWIRED_EN;
-    DB_ACTIVE_SONAR_SOURCE = hardwired_sonar_selected
-                                 ? DB_SONAR_SOURCE_HARDWIRED
-                                 : DB_SONAR_SOURCE_NONE;
-#else
-    DB_RADIO_MODE_DESIGNATED = DB_WIFI_MODE_AP;
-    DB_PARAM_RADIO_MODE = DB_WIFI_MODE_AP;
-    boot_radio_mode = DB_WIFI_MODE_AP;
-    ESP_LOGE(TAG, "Bluetooth is not enabled with this build. Please enable it "
-                  "in menuconfig and re-compile. Switching to AP mode.");
-    db_init_wifi_apmode(DB_WIFI_MODE_AP);
-    hardwired_sonar_selected = DB_PARAM_HARDWIRED_EN;
-    DB_ACTIVE_SONAR_SOURCE = hardwired_sonar_selected
-                                 ? DB_SONAR_SOURCE_HARDWIRED
-                                 : DB_SONAR_SOURCE_NONE;
-#endif
     break;
   default:
     // Wi-Fi client mode with LR mode enabled
