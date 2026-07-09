@@ -113,9 +113,8 @@ void db_timer_mavlink_heartbeat_callback(TimerHandle_t pxTimer) {
     return; // Do not send heartbeat in non mavlink modes
   }
   if (db_get_mav_sys_id() != 0) {
-    if (DB_PARAM_RADIO_MODE == DB_WIFI_MODE_ESPNOW_GND ||
-        DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP_LR) {
-      // In AP LR mode and in ESP-NOW GND mode the heartbeat has to be emitted
+    if (DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP_LR) {
+      // In AP LR mode the heartbeat has to be emitted
       // via serial directly to the GCS
       uint16_t length = db_mav_create_heartbeat(buff, &fmav_status_serial);
       write_to_serial(buff, length);
@@ -163,7 +162,6 @@ void db_timer_mavlink_radiostatus_callback(TimerHandle_t pxTimer) {
   // ESP32s that are connected to a flight controller via UART will send
   // RADIO_STATUS messages to the GND
   if (runtime_sta ||
-      DB_PARAM_RADIO_MODE == DB_WIFI_MODE_ESPNOW_AIR ||
       DB_PARAM_RADIO_MODE == DB_BLUETOOTH_MODE) {
     // ToDo: For BLE only the last connected client is considered.
     fmav_radio_status_t payload_r = {
@@ -203,7 +201,7 @@ void db_timer_mavlink_radiostatus_callback(TimerHandle_t pxTimer) {
         &fmav_status_radio);
     db_send_to_all_radio_clients(buff, len);
   } else {
-    // In AP LR or ESPNOW GND mode the clients will send the info to the GCS
+    // In AP LR mode the clients will send the info to the GCS
     // directly, no need for the GND ESP32 to do anything
   }
 }

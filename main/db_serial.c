@@ -302,8 +302,7 @@ void db_read_serial_parse_mavlink(int *tcp_clients, udp_conn_list_t *udp_conns, 
                      result.frame_len);
             // Check if the new message will fit in the buffer
             if (*serial_buff_pos == 0 && result.frame_len > DB_PARAM_SERIAL_PACK_SIZE) {
-                // frame_len is bigger than DB_PARAM_SERIAL_PACK_SIZE -> Split into multiple messages since
-                // e.g. ESP-NOW can only handle DB_ESPNOW_PAYLOAD_MAXSIZE bytes which is less than MAVLink max msg length
+                // frame_len is bigger than DB_PARAM_SERIAL_PACK_SIZE -> Split into multiple messages
                 uint16_t sent_bytes = 0;
                 uint16_t next_chunk_len = 0;
                 do {

@@ -46,7 +46,6 @@
 
 #include "deeper_udp_sonar.h"
 #include "danevi_sonar.h"
-#include "db_esp_now.h"
 #include "db_parameters.h"
 #include "db_serial.h"
 #include "db_sonar_log.h"
@@ -810,32 +809,6 @@ int db_init_wifi_clientmode(uint32_t connect_window_ms) {
 }
 
 /**
- * Initialize Wi-Fi for ESP-NOW mode.
- * If someone uses ESP-NOW over Wi-Fi it is because he wants range over
- * everything else. LR mode makes it very inconvenient to change settings but
- * gives the most range. No AP mode since AP will not be visible.
- */
-void db_init_wifi_espnow() {
-  ESP_LOGI(TAG, "Setting up Wi-Fi for ESP-NOW");
-  db_cleanup_wifi_runtime();
-  ESP_ERROR_CHECK(esp_netif_init());
-  ESP_ERROR_CHECK(esp_event_loop_create_default());
-  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-  ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
-  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-  ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-  ESP_ERROR_CHECK(esp_wifi_start());
-  ESP_ERROR_CHECK(
-      esp_wifi_set_channel(DB_PARAM_CHANNEL, WIFI_SECOND_CHAN_NONE));
-  ESP_ERROR_CHECK(
-      esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_LR));
-  ESP_LOGI(TAG, "Enabled ESP-NOW WiFi Mode! LR Mode is set. This device will "
-                "be invisible to non-ESP32 devices!");
-  ESP_ERROR_CHECK(esp_read_mac(LOCAL_MAC_ADDRESS, ESP_MAC_WIFI_STA));
-}
-
-/**
  * Enables or disables (via reboot) the Wi-Fi/BLE if the
  * DB_PARAM_DIS_RADIO_ON_ARM parameter is set. Not used during boot. Usually
  * called when arm state change of the autopilot is detected. As internal check
@@ -1184,15 +1157,6 @@ void app_main() {
                                    : DB_SONAR_SOURCE_NONE;
     }
     break;
-  case DB_WIFI_MODE_ESPNOW_AIR:
-  case DB_WIFI_MODE_ESPNOW_GND:
-    db_init_wifi_espnow();
-    db_start_espnow_module();
-    hardwired_sonar_selected = DB_PARAM_HARDWIRED_EN;
-    DB_ACTIVE_SONAR_SOURCE = hardwired_sonar_selected
-                                 ? DB_SONAR_SOURCE_HARDWIRED
-                                 : DB_SONAR_SOURCE_NONE;
-    break;
   case DB_BLUETOOTH_MODE:
 #ifdef CONFIG_BT_ENABLED
     db_init_wifi_apmode(
@@ -1249,9 +1213,7 @@ void app_main() {
     ESP_LOGI(TAG, "No hardwired sonar source selected for this boot.");
   }
 
-  if (boot_radio_mode != DB_WIFI_MODE_ESPNOW_AIR &&
-      boot_radio_mode != DB_WIFI_MODE_ESPNOW_GND &&
-      boot_radio_mode != DB_WIFI_MODE_AP_LR) {
+  if (boot_radio_mode != DB_WIFI_MODE_AP_LR) {
     // no need to start these services - won`t be available anyway - safe the
     // resources
     start_mdns_service();
@@ -1292,9 +1254,7 @@ void app_main() {
   // component, if linked, overrides these hooks at link time (see README).
   dbb_brain_init();
 
-  if (boot_radio_mode != DB_WIFI_MODE_ESPNOW_AIR &&
-      boot_radio_mode != DB_WIFI_MODE_ESPNOW_GND &&
-      boot_radio_mode != DB_WIFI_MODE_AP_LR) {
+  if (boot_radio_mode != DB_WIFI_MODE_AP_LR) {
     // no need to start these services - won`t be available anyway - safe the
     // resources
     ESP_ERROR_CHECK(start_rest_server(CONFIG_WEB_MOUNT_POINT));

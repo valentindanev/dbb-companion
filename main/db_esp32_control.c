@@ -44,7 +44,6 @@
 #include <db_parameters.h>
 #include "main.h"
 #include "db_serial.h"
-#include "db_esp_now.h"
 #include "freertos/semphr.h"
 
 #define TAG "DB_CONTROL"
@@ -317,32 +316,9 @@ void db_send_to_all_udp_clients(const uint8_t *data, uint data_length) {
 }
 
 /**
- * Adds a payload to be sent via ESP-NOW to the ESP-NOW queue (where the esp-now task will pick it up, encrypt, package
- * and finally send it over the air)
- *
- * @param data Pointer to the payload buffer
- * @param data_length Length of the payload data. Must not be bigger than DB_ESPNOW_PAYLOAD_MAXSIZE - fails otherwise
- */
-void db_send_to_all_espnow(uint8_t data[], const uint16_t *data_length) {
-    db_espnow_queue_event_t evt;
-    evt.data = malloc(*data_length);
-    memcpy(evt.data, data, *data_length);
-    evt.data_len = *data_length;
-    evt.packet_type = DB_ESP_NOW_PACKET_TYPE_DATA;
-    if (xQueueSend(db_espnow_send_queue, &evt, ESPNOW_MAXDELAY) != pdTRUE) {
-        ESP_LOGW(TAG, "Send to db_espnow_send_queue queue fail");
-        free(evt.data);
-    } else {
-        // all good
-    }
-}
-
-/**
  * Main call for sending anything over the air.
- * Send to all connected TCP & UDP clients or broadcast via ESP-NOW depending on the mode (DB_WIFI_MODE) we are currently in.
+ * Send to all connected TCP & UDP clients depending on the mode (DB_WIFI_MODE) we are currently in.
  * Typically called by a function that read from UART.
- *
- * When in ESP-NOW mode the packets will be split if they are bigger than DB_ESPNOW_PAYLOAD_MAXSIZE.
  *
  * @param tcp_clients Array of socket IDs for the TCP clients
  * @param udp_conn Structure handling the UDP connection
@@ -354,27 +330,6 @@ void db_send_to_all_clients(int tcp_clients[], udp_conn_list_t *n_udp_conn_list,
     db_ble_queue_event_t bleData;
 #endif
     switch (DB_PARAM_RADIO_MODE) {
-        case DB_WIFI_MODE_ESPNOW_AIR:
-        case DB_WIFI_MODE_ESPNOW_GND:
-            // ESP-NOW mode
-            if (data_length > DB_ESPNOW_PAYLOAD_MAXSIZE) {
-                // Data not properly sized, split into multiple packets
-                uint16_t sent_bytes = 0;
-                uint16_t next_chunk_len = 0;
-                do {
-                    next_chunk_len = data_length - sent_bytes;
-                    if (next_chunk_len > DB_ESPNOW_PAYLOAD_MAXSIZE) {
-                        next_chunk_len = DB_ESPNOW_PAYLOAD_MAXSIZE;
-                    }
-                    db_send_to_all_espnow(&data[sent_bytes], &next_chunk_len);
-                    sent_bytes += next_chunk_len;
-                } while (sent_bytes < data_length);
-            } else {
-                // Packet is properly sized - send to ESP-NOW outbound queue
-                db_send_to_all_espnow(data, &data_length);
-            }
-            break;
-
         case DB_BLUETOOTH_MODE:
 #ifdef CONFIG_BT_ENABLED
             bleData.data = malloc(data_length);
@@ -406,26 +361,6 @@ void db_send_to_all_radio_clients(uint8_t data[], uint16_t data_length) {
     db_ble_queue_event_t bleData;
 #endif
     switch (DB_PARAM_RADIO_MODE) {
-        case DB_WIFI_MODE_ESPNOW_AIR:
-        case DB_WIFI_MODE_ESPNOW_GND:
-            // ESP-NOW mode
-            if (data_length > DB_ESPNOW_PAYLOAD_MAXSIZE) {
-                // Data not properly sized, split into multiple packets
-                uint16_t sent_bytes = 0;
-                uint16_t next_chunk_len = 0;
-                do {
-                    next_chunk_len = data_length - sent_bytes;
-                    if (next_chunk_len > DB_ESPNOW_PAYLOAD_MAXSIZE) {
-                        next_chunk_len = DB_ESPNOW_PAYLOAD_MAXSIZE;
-                    }
-                    db_send_to_all_espnow(&data[sent_bytes], &next_chunk_len);
-                    sent_bytes += next_chunk_len;
-                } while (sent_bytes < data_length);
-            } else {
-                // Packet is properly sized - send to ESP-NOW outbound queue
-                db_send_to_all_espnow(data, &data_length);
-            }
-            break;
         case DB_BLUETOOTH_MODE:
 #ifdef CONFIG_BT_ENABLED
             bleData.data = malloc(data_length);
@@ -596,61 +531,6 @@ void read_process_serial_link(int *tcp_clients, uint *transparent_buff_pos,
 }
 
 /**
- * Thread that manages all incoming and outgoing ESP-NOW and serial (UART) connections.
- * Called only when ESP-NOW mode is selected
- */
-_Noreturn void control_module_esp_now() {
-    ESP_LOGI(TAG, "Starting control module (ESP-NOW)");
-    esp_err_t serial_socket = ESP_FAIL;
-    // open serial socket for comms with FC or GCS
-    serial_socket = open_serial_socket();
-    if (serial_socket == ESP_FAIL) {
-        ESP_LOGE(TAG, "UART socket not opened. Aborting start of control module.");
-        vTaskDelete(NULL);
-    } else {
-#ifdef CONFIG_DB_SERIAL_OPTION_JTAG
-        db_jtag_serial_info_print();
-#endif
-    }
-
-    uint transparent_buff_pos = 0;
-    uint8_t msp_message_buffer[UART_BUF_SIZE];
-    uint8_t serial_buffer[DB_PARAM_SERIAL_PACK_SIZE];
-    db_espnow_queue_event_t db_espnow_uart_evt;
-    uint delay_timer_cnt = 0;
-
-    ESP_LOGI(TAG, "Started control module (ESP-NOW)");
-    while (1) {
-        // read UART (and split into packets & process MAVLink if desired); send to ESP-NOW queue to be processed by esp-now task
-        read_process_serial_link(NULL, &transparent_buff_pos, msp_message_buffer, serial_buffer);
-        // read queue that was filled by esp-now task to check for data that needs to be sent via serial link
-        if (db_uart_write_queue != NULL && xQueueReceive(db_uart_write_queue, &db_espnow_uart_evt, 1) == pdTRUE) {
-            if (DB_PARAM_SERIAL_PROTO == DB_SERIAL_PROTOCOL_MAVLINK) {
-                // Parse, so we can listen in and react to certain messages - function will send parsed messages to serial link.
-                // We can not write to serial first since we might inject packets and do not know when to do so to not "destroy" an existing packet
-                db_parse_mavlink_from_radio(NULL, NULL, db_espnow_uart_evt.data, db_espnow_uart_evt.data_len);
-            } else {
-                // no parsing with any other protocol - transparent here - just pass through
-                write_to_serial(db_espnow_uart_evt.data, db_espnow_uart_evt.data_len);
-            }
-            free(db_espnow_uart_evt.data);
-        } else {
-            if (db_uart_write_queue == NULL) ESP_LOGE(TAG, "db_uart_write_queue is NULL!");
-            // no new data available to be sent via serial link do nothing
-        }
-        if (delay_timer_cnt == 5000) {
-            /* all actions are non-blocking so allow some delay so that the IDLE task of FreeRTOS and the watchdog can run
-            read: https://esp32developer.com/programming-in-c-c/tasks/tasks-vs-co-routines for reference */
-            vTaskDelay(10 / portTICK_PERIOD_MS);
-            delay_timer_cnt = 0;
-        } else {
-            delay_timer_cnt++;
-        }
-    }
-    vTaskDelete(NULL);
-}
-
-/**
  * Sends DroneBridge internal telemetry to tell every connected WiFi station how well we receive their data (rssi).
  * Uses UDP multicast message. Format: [NUM_Entries - (MAC + RSSI) - (MAC + RSSI) - ...]
  * Internal telemetry uses DB_ESP32_INTERNAL_TELEMETRY_PORT port
@@ -728,7 +608,7 @@ void handle_internal_telemetry(int tel_sock, uint8_t *udp_buffer, socklen_t *soc
                 max_parse_len = expected_len;
             }
             for (int i = 1; (i + 6) < max_parse_len; i += 7) {
-                if (memcmp(LOCAL_MAC_ADDRESS, &udp_buffer[i], ESP_NOW_ETH_ALEN) == 0) {
+                if (memcmp(LOCAL_MAC_ADDRESS, &udp_buffer[i], 6) == 0) {
                     // found us in the list (this local ESP32 AIR unit) -> update internal telemetry buffer,
                     // so it gets sent with next Mavlink RADIO STATUS in case MAVLink radio status is enabled
                     db_esp_signal_quality.gnd_rssi = (int8_t) udp_buffer[i + 6];
@@ -980,17 +860,6 @@ _Noreturn void control_module_ble() {
  */
 void db_start_control_module() {
     switch (DB_PARAM_RADIO_MODE) {
-        case DB_WIFI_MODE_ESPNOW_GND:
-        case DB_WIFI_MODE_ESPNOW_AIR:
-            xTaskCreate(&control_module_esp_now, /**< Task function for ESP-NOW communication */
-                        "control_espnow",           /**< Task name (for debugging) */
-                        40960,                  /**< Stack size (in bytes) */
-                        NULL,                   /**< Task parameters (unused) */
-                        5,                         /**< Task priority */
-                        NULL                   /**< Task handle (unused) */
-            );
-            break;
-
         case DB_BLUETOOTH_MODE:
 #ifdef CONFIG_BT_ENABLED
             xTaskCreate(&control_module_ble,   /**< Task function for Bluetooth BLE communication */

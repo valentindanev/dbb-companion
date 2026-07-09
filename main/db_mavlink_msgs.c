@@ -327,10 +327,9 @@ void handle_mavlink_message(fmav_message_t *new_msg, int *tcp_clients, udp_conn_
                 if (payload.autopilot == MAV_AUTOPILOT_INVALID && payload.type == MAV_TYPE_GCS) {
                     ESP_LOGD(TAG, "Got heartbeat from GCS (sysID: %i)", new_msg->sysid);
                     DB_MAV_SYS_ID = new_msg->sysid;
-                    // We must be in either one of these modes: AP LR or ESP-NOW GND
-                    if (DB_PARAM_RADIO_MODE == DB_WIFI_MODE_ESPNOW_GND || DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP_LR) {
-                    } else {
-                        ESP_LOGW(TAG, "We received a heartbeat from GCS while not being in DB_WIFI_MODE_ESPNOW_GND or "
+                    // We must be in AP LR mode
+                    if (DB_PARAM_RADIO_MODE != DB_WIFI_MODE_AP_LR) {
+                        ESP_LOGW(TAG, "We received a heartbeat from GCS while not being in "
                                       "DB_WIFI_MODE_AP_LR mode. Check your configuration! AIR-Side ESP32 seems to be "
                                       "connected to GCS via UART");
                     }
