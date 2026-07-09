@@ -989,6 +989,8 @@ esp_err_t start_rest_server(const char *base_path) {
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.max_uri_handlers = 20;
     config.stack_size = DB_HTTP_SERVER_STACK_SIZE;
+    config.max_open_sockets = 12;      // raised with LWIP_MAX_SOCKETS=24 (BLE off freed the RAM) — comfortable multi-browser headroom
+    config.lru_purge_enable = true;    // pool full -> recycle the stalest idle connection instead of rejecting (fixes the blank page on a 2nd/3rd client)
 
     ESP_LOGI(TAG, "Starting HTTP Server");
     REST_CHECK(httpd_start(&server, &config) == ESP_OK, "Start server failed", err_start);

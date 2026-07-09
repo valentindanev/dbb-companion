@@ -290,8 +290,7 @@ footer{padding:16px 4px 4px;color:var(--faint);font-size:11.5px}
         <div class="row one">
           <div class="field"><label for="esp32_mode">Wi-Fi mode</label>
             <select id="esp32_mode" name="esp32_mode" form="settings_form" onchange="change_ap_ip_visibility()">
-              <option value="1">Wi-Fi Access Point</option><option value="2">Wi-Fi Client</option><option value="3">Access Point (Long Range)</option>
-              <option value="4">ESP-NOW LR Air</option><option value="5">ESP-NOW LR Ground</option><option value="6">Bluetooth LE</option>
+              <option value="1">Wi-Fi Access Point</option><option value="2">Wi-Fi Client</option>
             </select>
             <div class="info note" id="esp-lr-ap-disclaimer" style="display:none"><h4>Long-Range mode</h4>Invisible to non-LR devices and you can&rsquo;t change config over Wi-Fi. Hold BOOT (or erase &amp; reflash) to return to normal Wi-Fi.</div>
             <div class="info note" id="ble_disclaimer_div" style="display:none"><h4>Bluetooth LE (beta)</h4>The GCS must explicitly support the Companion&rsquo;s BLE. Your AP config still runs in parallel so this page stays reachable.</div>

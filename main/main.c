@@ -857,7 +857,9 @@ void db_set_radio_status(uint8_t enable_wifi) {
     } else if (!enable_wifi && !DB_RADIO_IS_OFF) {
       ESP_LOGI(TAG, "Disabling Wi-Fi/BLE");
       if (DB_PARAM_RADIO_MODE == DB_BLUETOOTH_MODE) {
+#ifdef CONFIG_BT_ENABLED
         db_ble_deinit(); // disable BLE
+#endif
         DB_RADIO_IS_OFF = true;
       } else {
         if (esp_wifi_stop() == ESP_OK) { // disable WiFi
