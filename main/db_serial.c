@@ -142,6 +142,12 @@ void write_to_serial(const uint8_t data_buffer[], const unsigned int data_length
     }
 #else
     // UART based serial socket for comms with FC or GCS via FTDI - configured by pins in the web interface
+    // No-FC gate: if the UART driver was never installed (TX==RX / pins unset / no FC), skip the write.
+    // Otherwise uart_write_bytes fails ~10x/s and floods the log. This one choke point gates every
+    // MAVLink-out path (sonar publish, heartbeat, radio-status, and the future brain) at once.
+    if (!uart_is_driver_installed(UART_NUM)) {
+        return;
+    }
     // Writes data from buffer to native UART interface
     int written = uart_write_bytes(UART_NUM, data_buffer, data_length);
     if (written != data_length) {
