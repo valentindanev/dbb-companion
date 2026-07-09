@@ -4,6 +4,16 @@
 
 > ⚠️ **Early / work-in-progress.** This is the open *base*. It already works as a sonar + MAVLink Wi-Fi bridge, but hardening (RAM/task cleanup) is ongoing — expect changes.
 
+![DBB Companion web dashboard](docs/dashboard.jpg)
+
+## Why?
+
+Fishing sonars — a hardwired transducer, or a **Deeper CHIRP+** over Wi-Fi — only talk over **short-range Wi-Fi**. On a bait boat that's the core problem: a few hundred metres out and the sonar's Wi-Fi is gone, exactly where you want to read the depth.
+
+DBB Companion moves that link **onto the boat**. The ESP32 sits right next to the sonar — its Wi-Fi only has to reach *centimetres*, not kilometres — reads the depth from a **hardwired** sonar and/or the **Deeper's own Wi-Fi**, and republishes it as a MAVLink `DISTANCE_SENSOR` to the flight controller. From there the depth rides your **long-range radio telemetry link** — e.g. ELRS carrying MAVLink, km-class range — straight back to the tablet/laptop ground station, right alongside GPS, battery and the rest of the boat's telemetry.
+
+**The result: no long-range Wi-Fi to the sonar.** Depth travels the same km-range radio link as everything else, so you read it on your GCS wherever the boat is — no separate Wi-Fi bridge back to shore, no losing the sonar the moment the boat gets far out.
+
 ## What it does
 - **Dual sonar → MAVLink `DISTANCE_SENSOR`** — a hardwired UART sonar *and* a Deeper CHIRP+ Wi-Fi sonar (boot-time source selection), published to the flight controller.
 - **MAVLink 2 Wi-Fi bridge** to an ArduPilot / ArduRover flight controller (plus a transparent passthrough mode).
