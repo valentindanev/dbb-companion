@@ -43,7 +43,7 @@ An optional **brain** component can override those hooks at link time to add aut
 - This firmware is **Apache-2.0** — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
 - Built on **[DroneBridge for ESP32](https://github.com/DroneBridge/ESP32)** (Apache-2.0) by Wolfgang Christl — the Wi-Fi transport, parameter/settings system, serial↔MAVLink bridge, and REST scaffolding.
 - MAVLink via **[fastMAVLink](https://github.com/olliw42/fastmavlink)** (MIT).
-- The dual-sonar stack, persistent log, A/B OTA, and web dashboard are original work by **Valentin Danev**.
+- The dual-sonar stack, persistent log, A/B OTA, and web dashboard are original work by **Valentin Danev & Optimus Prime** .
 
 ---
-*Danevi Bait Boats · DBB Companion*
+*Danevi Bait Boats · DBB Companion*     
