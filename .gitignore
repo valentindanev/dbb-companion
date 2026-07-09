@@ -1,0 +1,28 @@
+# ---- ESP-IDF build output ----
+/build/
+/build_*/
+sdkconfig
+sdkconfig.old
+
+# ---- Managed components (restored from dependencies.lock via idf.py) ----
+/managed_components/
+
+# ---- Frontend (npm) ----
+/frontend/node_modules/
+/frontend/build/
+
+# ---- Private brain guard (defense in depth) ----
+# The proprietary brain lives OUTSIDE this repo (../dbb-brain-private) and is
+# pulled in at build time. This guard stops a real brain implementation ever
+# being committed if one is dropped inside the tree by mistake. The public weak
+# stub (main/dbb_brain_stub.c) is intentionally NOT matched by this pattern.
+**/dbb_brain.c
+
+# ---- Backups / editor / OS ----
+*.BAK_*
+*.bak
+*~
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

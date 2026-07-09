@@ -1,0 +1,21 @@
+DBB Companion
+Copyright 2026 Valentin Danev
+
+This product is built on software developed as part of the DroneBridge project:
+
+  DroneBridge for ESP32 - https://github.com/DroneBridge/ESP32
+  Copyright 2017-2024 Wolfgang Christl
+  Licensed under the Apache License, Version 2.0.
+
+DroneBridge provides the foundation: the Wi-Fi AP/STA/LR transports, the
+settings/parameter system, the serial <-> MAVLink bridge and routing, and the
+REST scaffolding.
+
+This product also includes the fastMAVLink C library (MIT License):
+
+  fastMAVLink - https://github.com/olliw42/fastmavlink
+
+The dual-sonar stack (hardwired UART sonar + Deeper CHIRP+ Wi-Fi sonar with a
+reverse-engineered protocol), the persistent sonar log, the dual-slot A/B OTA
+system, and the web dashboard are original work by Valentin Danev, licensed
+under the Apache License, Version 2.0 as part of this repository.

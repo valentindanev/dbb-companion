@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Danevi Bait Boats &middot; Companion</title>
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
+<meta name="theme-color" content="#04121e">
+<link inline href="toastify/toastify.css" />
+<style>
+:root{
+  --bg:#04121e; --bg2:#071c2c; --surface:#0a2033; --surface2:#0e2a41;
+  --card:#0a2134; --input:#0d283e; --line:#173a56; --line-soft:#112f47;
+  --text:#eef5fb; --muted:#a6bdd2; --faint:#7793ac;
+  --accent:#aad43b; --accent2:#7ea52e; --accent-ink:#0a2109; --accent-glow:rgba(170,212,59,.16);
+  --teal:#33c0c0; --gold:#d8c26a;
+  --warn:#f4be55; --warn-bg:#241d10; --warn-line:#5f4a1f;
+  --danger:#ff5f6e; --danger-bg:rgba(255,95,110,.09); --danger-line:rgba(255,95,110,.42);
+  --radius:16px; --radius-sm:10px;
+  --shadow:0 22px 50px -24px rgba(0,0,0,.8);
+  --font:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;
+  --mono:'JetBrains Mono',Consolas,'SF Mono',monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;font-family:var(--font);font-size:14px;line-height:1.55;color:var(--text);
+  background:
+    radial-gradient(1200px 620px at 82% -8%, rgba(51,192,192,.10), transparent 60%),
+    radial-gradient(1000px 560px at -6% 4%, rgba(170,212,59,.08), transparent 55%),
+    var(--bg);
+  background-attachment:fixed;}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:inherit}
+.icon{width:20px;height:20px;flex:0 0 auto;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;fill:none}
+
+.topbar{position:sticky;top:0;z-index:30;height:80px;
+  background:linear-gradient(180deg,rgba(4,18,30,.92),rgba(4,18,30,.72));
+  border-bottom:1px solid var(--line-soft);backdrop-filter:blur(14px)}
+.topbar-inner{height:100%;max-width:1500px;width:100%;margin:0 auto;display:flex;align-items:center;
+  gap:22px;padding:0 clamp(20px,3.4vw,54px) 0 18px}
+.brand{display:flex;align-items:center}
+.brand img{height:66px;width:auto;display:block;filter:drop-shadow(0 4px 12px rgba(0,0,0,.5))}
+.topbar .spacer{flex:1}
+.pill{display:inline-flex;align-items:center;gap:9px;padding:8px 14px;border-radius:999px;
+  background:rgba(170,212,59,.10);border:1px solid rgba(170,212,59,.32);color:var(--accent);
+  font-weight:600;font-size:12.5px;white-space:nowrap}
+.dot_green,.dot_red{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px var(--accent-glow)}
+.dot_red{background:var(--danger);box-shadow:0 0 0 4px rgba(255,95,110,.14)}
+
+.layout{display:grid;grid-template-columns:250px minmax(0,1fr);max-width:1500px;margin:0 auto}
+.side{position:sticky;top:80px;height:calc(100vh - 80px);padding:22px 16px;
+  border-right:1px solid var(--line-soft);display:flex;flex-direction:column;gap:20px;overflow:auto}
+.dev-card{padding:15px 16px;border-radius:var(--radius-sm);border:1px solid var(--line);
+  background:linear-gradient(160deg,var(--surface2),var(--surface));position:relative;overflow:hidden}
+.dev-card strong{display:block;font-size:15px;margin-top:3px}
+.dev-card small{display:block;color:var(--muted);font-size:11.5px;margin-top:4px;font-family:var(--mono)}
+.eyebrow{font-size:10px;font-weight:800;letter-spacing:.16em;color:var(--accent);text-transform:uppercase}
+.nav{display:flex;flex-direction:column;gap:3px}
+.nav a{display:flex;align-items:center;gap:13px;padding:11px 13px;border-radius:10px;color:var(--muted);
+  text-decoration:none;font-weight:600;font-size:13.5px;transition:.15s;position:relative}
+.nav a .icon{width:19px;height:19px;color:var(--faint);transition:.15s}
+.nav a:hover{background:var(--surface);color:var(--text)}
+.nav a:hover .icon{color:var(--muted)}
+.nav a.active{background:linear-gradient(90deg,rgba(170,212,59,.14),rgba(170,212,59,.03));color:var(--text)}
+.nav a.active .icon{color:var(--accent)}
+.nav a.active:before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:3px;background:var(--accent);box-shadow:0 0 12px var(--accent)}
+.side-foot{margin-top:auto;padding:12px 8px;color:var(--faint);font-size:11px;line-height:1.5}
+.side-foot b{display:block;color:var(--muted);font-size:10px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:3px}
+#web_conn_status{font-size:11.5px;color:var(--muted);margin-top:8px}
+
+.content{padding:30px clamp(20px,3.4vw,54px) 40px;width:100%;min-width:0}
+.hero{position:relative;overflow:hidden;border-radius:var(--radius);border:1px solid var(--line);
+  padding:30px 32px;margin-bottom:20px;
+  background:linear-gradient(120deg,var(--surface) 0%,var(--bg2) 55%,#06263a 100%)}
+.hero:before{content:"";position:absolute;right:-60px;top:-90px;width:360px;height:360px;border-radius:50%;
+  background:
+    radial-gradient(circle,transparent 34%,rgba(51,192,192,.10) 35%,transparent 37%),
+    radial-gradient(circle,transparent 48%,rgba(51,192,192,.08) 49%,transparent 51%),
+    radial-gradient(circle,transparent 62%,rgba(170,212,59,.07) 63%,transparent 65%);
+  pointer-events:none}
+.hero-row{position:relative;display:flex;align-items:flex-end;justify-content:space-between;gap:20px;flex-wrap:wrap}
+.hero h1{margin:6px 0 6px;font-size:32px;line-height:1.05;letter-spacing:-.03em}
+.hero p{margin:0;color:var(--muted);max-width:56ch}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;position:relative}
+.chip{display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:600;
+  background:var(--surface2);border:1px solid var(--line);color:var(--muted)}
+.chip .icon{width:15px;height:15px;color:var(--teal)}
+.chip b{color:var(--text);font-weight:700}
+.btn{display:inline-flex;align-items:center;gap:9px;border-radius:10px;padding:11px 16px;font-weight:700;
+  font-size:13.5px;cursor:pointer;border:1px solid var(--line);background:var(--surface2);color:var(--text);transition:.15s;text-decoration:none}
+.btn:hover{border-color:var(--accent);color:#fff}
+.btn .icon{width:17px;height:17px}
+.btn.accent{background:linear-gradient(135deg,var(--accent),var(--accent2));border:0;color:var(--accent-ink);
+  box-shadow:0 10px 26px -10px var(--accent-glow),0 0 0 1px rgba(170,212,59,.3) inset}
+.btn.accent:hover{color:var(--accent-ink);filter:brightness(1.06)}
+.btn.danger{color:#ff9aa4;border-color:var(--danger-line);background:var(--danger-bg)}
+.btn.danger:hover{border-color:var(--danger);color:#fff}
+.img_button{cursor:pointer;opacity:.7;filter:brightness(0) invert(.8)}
+.img_button:hover{opacity:1}
+
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:13px;margin-bottom:16px}
+.stat{display:flex;gap:13px;align-items:center;padding:16px 17px;border-radius:var(--radius);
+  background:var(--card);border:1px solid var(--line);position:relative;overflow:hidden}
+.stat:after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent);opacity:.55}
+.stat.teal:after{background:var(--teal)}
+.stat .si{width:40px;height:40px;flex:0 0 auto;border-radius:11px;display:grid;place-items:center;
+  background:rgba(170,212,59,.12);color:var(--accent)}
+.stat.teal .si{background:rgba(51,192,192,.13);color:var(--teal)}
+.stat .si .icon{width:21px;height:21px}
+.stat .lbl{color:var(--muted);font-size:11.5px;font-weight:600}
+.stat .val{font-size:19px;font-weight:800;letter-spacing:-.02em;line-height:1.15;margin-top:2px;word-break:break-word}
+.stat .val.ok{color:var(--accent);font-size:16px}
+
+.alert{display:grid;grid-template-columns:auto 1fr auto;gap:13px;align-items:center;
+  padding:14px 17px;margin-bottom:18px;border-radius:var(--radius-sm);
+  background:var(--warn-bg);border:1px solid var(--warn-line);color:var(--warn)}
+.alert .icon{width:20px;height:20px}
+.alert b{color:#ffd98a}.alert span{font-size:12.5px;color:#e9cf9c}
+.alert button{background:none;border:0;color:inherit;cursor:pointer;font-size:16px;opacity:.75}
+
+.panel{margin:16px 0;border-radius:var(--radius);border:1px solid var(--line);background:var(--surface);
+  box-shadow:var(--shadow);overflow:hidden;scroll-margin-top:96px}
+.panel>header{display:flex;align-items:center;gap:14px;padding:19px 22px;border-bottom:1px solid var(--line-soft);
+  background:linear-gradient(180deg,rgba(255,255,255,.015),transparent)}
+.p-ico{width:42px;height:42px;flex:0 0 auto;border-radius:12px;display:grid;place-items:center;
+  background:rgba(170,212,59,.12);color:var(--accent);border:1px solid rgba(170,212,59,.2)}
+.panel h2{margin:0;font-size:18px;letter-spacing:-.01em}
+.panel header p{margin:2px 0 0;color:var(--muted);font-size:12.5px}
+.tag{margin-left:auto;font-size:9.5px;font-weight:800;letter-spacing:.14em;padding:5px 9px;border-radius:6px;
+  background:rgba(170,212,59,.1);color:var(--accent);border:1px solid rgba(170,212,59,.22)}
+.body{padding:22px}
+.sub{font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin:18px 0 14px}
+.sub:first-child{margin-top:2px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px}
+.row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px}
+.row.one{grid-template-columns:1fr}
+.field{min-width:0}
+label>span,.field>span,.field>label{display:block;font-size:11.5px;font-weight:700;color:var(--muted);margin-bottom:6px}
+input,select,textarea{width:100%;border:1px solid var(--line);border-radius:9px;background:var(--input);
+  color:var(--text);padding:11px 12px;outline:0;transition:.15s}
+input::placeholder{color:var(--faint)}
+.static-field{width:100%;border:1px solid var(--line);border-radius:9px;background:var(--input);color:var(--text);padding:11px 12px;display:flex;align-items:center;gap:8px;opacity:.92}
+.static-field .lock-note{color:var(--faint);font-size:12px;font-weight:400}
+input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow);background:#0f2d45}
+select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a6bdd2' stroke-width='2.4'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
+.pw{display:flex}.pw input{border-radius:9px 0 0 9px}
+.pw button{border:1px solid var(--line);border-left:0;border-radius:0 9px 9px 0;background:var(--input);color:var(--accent);padding:0 12px;cursor:pointer;display:grid;place-items:center}
+.switch-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 2px;border-top:1px solid var(--line-soft)}
+.switch-row b{display:block;font-size:13.5px}.switch-row small{display:block;color:var(--muted);font-size:11.5px;margin-top:2px}
+.sw{position:relative;flex:0 0 auto;cursor:pointer}
+.sw input{position:absolute;opacity:0;width:0;height:0}
+.sw i{display:block;width:44px;height:24px;border-radius:20px;background:#26435c;transition:.2s}
+.sw i:after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#e6eef5;transition:.2s}
+.sw input:checked+i{background:linear-gradient(135deg,var(--accent),var(--accent2))}
+.sw input:checked+i:after{transform:translateX(20px)}
+details{margin-top:16px;border:1px solid var(--line-soft);border-radius:11px;overflow:hidden}
+summary{padding:13px 16px;cursor:pointer;font-weight:700;list-style:none}
+summary::-webkit-details-marker{display:none}
+.details-body{padding:0 16px 16px}
+.info.note{margin-top:12px;padding:12px 14px;border-radius:10px;border:1px solid var(--line);background:var(--surface2);color:var(--muted);font-size:12px;line-height:1.5}
+.info.note h4{margin:0 0 6px;color:var(--warn);font-size:12px}
+
+.sonar-cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.subcard{border:1px solid var(--line);border-radius:12px;padding:17px;background:var(--surface2)}
+.subhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:15px}
+.subhead h3{margin:0;font-size:14.5px}.subhead small{color:var(--muted);font-size:11.5px}
+.gauge{display:flex;align-items:center;gap:15px;padding:15px;border-radius:11px;margin:14px 0;
+  background:radial-gradient(120px 80px at 80% 20%,rgba(51,192,192,.12),transparent),var(--input);
+  border:1px solid rgba(51,192,192,.28)}
+.gauge .big{font-size:24px;font-weight:800;letter-spacing:-.02em;color:var(--teal);min-width:0}
+.gauge small{color:var(--muted);font-size:11.5px}
+.wave{flex:1;height:38px;border-radius:8px;background:repeating-linear-gradient(90deg,rgba(51,192,192,.16) 0 2px,transparent 2px 7px);opacity:.75}
+.reads{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:10px}
+.read{padding:11px;border:1px solid var(--line-soft);border-radius:9px;background:var(--surface)}
+.read small{display:block;color:var(--faint);font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.read .deeper-readout{font-size:13px;margin-top:3px;font-weight:600;color:var(--text)}
+.read .deeper-readout.hot{color:var(--accent)}
+textarea{resize:vertical;min-height:90px;font-family:var(--mono);font-size:11.5px;line-height:1.5;color:var(--muted)}
+.debug-window{min-height:96px}
+.big-console{min-height:150px}
+.console-lbl{display:block;margin-top:14px}
+.row-actions{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
+.row-actions .grow{margin-left:auto}
+.tooltiptext{display:none}
+
+.savebar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;
+  margin:22px 0 8px;padding:20px 24px;border-radius:var(--radius);
+  border:1px solid rgba(170,212,59,.34);background:linear-gradient(110deg,rgba(170,212,59,.08),var(--surface) 60%)}
+.savebar b{display:block;font-size:15px}.savebar small{display:block;color:var(--muted);margin-top:2px}
+footer{padding:16px 4px 4px;color:var(--faint);font-size:11.5px}
+#about{line-height:1.6}
+#about .credit{display:block;margin-top:4px;color:var(--faint);opacity:.9}
+#about .credit a{color:#AAD43B;text-decoration:none}
+#about .credit a:hover{text-decoration:underline}
+
+@media(max-width:1050px){.stats{grid-template-columns:repeat(2,1fr)}.sonar-cols{grid-template-columns:1fr}}
+@media(max-width:780px){
+  .layout{grid-template-columns:1fr}
+  .side{position:static;height:auto;flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--line-soft)}
+  .dev-card{flex:1 1 100%}.nav{flex-direction:row;flex-wrap:wrap}.side-foot{display:none}
+  .grid,.row{grid-template-columns:1fr}.hero h1{font-size:26px}.brand img{height:52px}
+}
+</style>
+<script inline src="toastify/toastify.js"></script>
+<script inline src="dronebridge.js"></script>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-overview" viewBox="0 0 24 24"><path d="M4 14a8 8 0 0 1 16 0"/><path d="M12 14l4-4"/><circle cx="12" cy="14" r="1.3" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2.5 9a15 15 0 0 1 19 0"/><path d="M5.5 12.4a10 10 0 0 1 13 0"/><path d="M8.7 15.8a5 5 0 0 1 6.6 0"/><circle cx="12" cy="19" r="1.1" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-serial" viewBox="0 0 24 24"><path d="M3 8.5h13M12 4.5l4 4-4 4"/><path d="M21 15.5H8M12 19.5l-4-4 4-4"/></symbol>
+  <symbol id="i-sonar" viewBox="0 0 24 24"><circle cx="6" cy="18" r="1.4" fill="currentColor" stroke="none"/><path d="M6 13a5 5 0 0 1 5 5"/><path d="M6 8a10 10 0 0 1 10 10"/><path d="M6 3a15 15 0 0 1 15 15"/></symbol>
+  <symbol id="i-logs" viewBox="0 0 24 24"><path d="M5 5h14M5 10h14M5 15h9M5 20h9"/></symbol>
+  <symbol id="i-update" viewBox="0 0 24 24"><path d="M12 16V4M8 8l4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.6M20 5v5h-5"/></symbol>
+  <symbol id="i-rx" viewBox="0 0 24 24"><path d="M12 4v13M6 11l6 6 6-6"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a4 4 0 0 0 5.7 0l2.3-2.3a4 4 0 0 0-5.7-5.7L11 6"/><path d="M14 11a4 4 0 0 0-5.7 0L6 13.3a4 4 0 0 0 5.7 5.7L13 18"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></symbol>
+  <symbol id="i-depth" viewBox="0 0 24 24"><path d="M3 6c2.2 2 4.3 2 6.5 0s4.3-2 6.5 0 4.3 2 6.5 0"/><path d="M3 12c2.2 2 4.3 2 6.5 0s4.3-2 6.5 0 4.3 2 6.5 0"/><path d="M3 18c2.2 2 4.3 2 6.5 0s4.3-2 6.5 0 4.3 2 6.5 0"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3l9.5 16.5H2.5L12 3z"/><path d="M12 9.5v4.5M12 17.2v.1"/></symbol>
+</svg>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#top"><img src="DroneBridgeLogo.png" alt="Danevi Bait Boats"></a>
+    <span class="spacer"></span>
+    <span class="pill" id="web_conn_status"><span class="dot_green"></span> connecting&hellip;</span>
+  </div>
+</header>
+
+<div class="layout" id="top">
+  <aside class="side">
+    <div class="dev-card">
+      <span class="eyebrow">Connected device</span>
+      <strong>DBB Companion</strong>
+      <small>192.168.42.1 &middot; v0.1</small>
+      <div id="current_client_ip"></div>
+    </div>
+    <nav class="nav">
+      <a href="#overview" class="active"><svg class="icon"><use href="#i-overview"/></svg><span>Overview</span></a>
+      <a href="#wifi"><svg class="icon"><use href="#i-wifi"/></svg><span>Wi-Fi</span></a>
+      <a href="#serial"><svg class="icon"><use href="#i-serial"/></svg><span>Serial</span></a>
+      <a href="#sonar"><svg class="icon"><use href="#i-sonar"/></svg><span>Sonar</span></a>
+      <a href="#logs"><svg class="icon"><use href="#i-logs"/></svg><span>Logs</span></a>
+      <a href="#update"><svg class="icon"><use href="#i-update"/></svg><span>Update</span></a>
+    </nav>
+    <div class="side-foot"><b>Danevi Bait Boats</b></div>
+  </aside>
+
+  <main class="content">
+    <section id="overview" class="hero">
+      <div class="hero-row">
+        <div>
+          <span class="eyebrow">System overview</span>
+          <h1>Boat connectivity</h1>
+          <div class="chips">
+            <span class="chip"><svg class="icon"><use href="#i-wifi"/></svg> AP <b>DaneviBaitBoats</b></span>
+            <span class="chip"><svg class="icon"><use href="#i-serial"/></svg> Link <b>MAVLink 2</b></span>
+            <span class="chip"><svg class="icon"><use href="#i-depth"/></svg> Dual sonar</span>
+          </div>
+        </div>
+        <button type="button" class="btn" onclick="get_system_info();get_settings();get_stats();get_sonar_log_status()"><svg class="icon"><use href="#i-refresh"/></svg> Refresh status</button>
+      </div>
+    </section>
+
+    <section class="stats">
+      <div class="stat"><div class="si"><svg class="icon"><use href="#i-rx"/></svg></div><div><div class="lbl">Serial received</div><div class="val" id="read_bytes">&mdash;</div></div></div>
+      <div class="stat teal"><div class="si"><svg class="icon"><use href="#i-link"/></svg></div><div><div class="lbl">TCP clients</div><div class="val" id="tcp_connected">&mdash;</div></div></div>
+      <div class="stat"><div class="si"><svg class="icon"><use href="#i-link"/></svg></div><div><div class="lbl">UDP clients</div><div class="val"><span id="udp_connected"><span class="tooltiptext" id="tooltip_udp_clients"></span>&mdash;</span>
+        <img class="img_button" height="16" alt="add" src="add_16dp_icon.png" onclick="add_new_udp_client()"><img class="img_button" height="16" alt="del" src="remove_16dp_icon.png" onclick="clear_udp_clients()"></div></div></div>
+      <div class="stat"><div class="si"><svg class="icon"><use href="#i-check"/></svg></div><div><div class="lbl">Device state</div><div class="val ok">Ready</div></div></div>
+    </section>
+
+    <div class="alert" id="issue_div" style="display:none">
+      <svg class="icon"><use href="#i-warn"/></svg>
+      <span><b>Baud rate check.</b> The Companion is receiving serial bytes but can&rsquo;t decode MAVLink &mdash; match the UART baud on the flight controller and the Companion.</span>
+      <button type="button" onclick="this.parentElement.style.display='none'">&times;</button>
+    </div>
+
+    <form id="settings_form">
+
+    <section id="wifi" class="panel">
+      <header><span class="p-ico"><svg class="icon"><use href="#i-wifi"/></svg></span><div><h2>Wi-Fi</h2><p>Wireless mode, network identity and radio behaviour.</p></div><span class="tag">RADIO</span></header>
+      <div class="body">
+        <div class="sub">Connection</div>
+        <div class="row one">
+          <div class="field"><label for="esp32_mode">Wi-Fi mode</label>
+            <select id="esp32_mode" name="esp32_mode" form="settings_form" onchange="change_ap_ip_visibility()">
+              <option value="1">Wi-Fi Access Point</option><option value="2">Wi-Fi Client</option><option value="3">Access Point (Long Range)</option>
+              <option value="4">ESP-NOW LR Air</option><option value="5">ESP-NOW LR Ground</option><option value="6">Bluetooth LE</option>
+            </select>
+            <div class="info note" id="esp-lr-ap-disclaimer" style="display:none"><h4>Long-Range mode</h4>Invisible to non-LR devices and you can&rsquo;t change config over Wi-Fi. Hold BOOT (or erase &amp; reflash) to return to normal Wi-Fi.</div>
+            <div class="info note" id="ble_disclaimer_div" style="display:none"><h4>Bluetooth LE (beta)</h4>The GCS must explicitly support the Companion&rsquo;s BLE. Your AP config still runs in parallel so this page stays reachable.</div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="field" id="wifi_ssid_div"><label for="ssid">SSID</label><input type="text" name="ssid" id="ssid" maxlength="31" value=""></div>
+          <div class="field" id="pass_div"><label for="wifi_pass">Password</label><div class="pw"><input type="password" name="wifi_pass" id="wifi_pass" minlength="8" maxlength="63" required value=""><button type="button" onclick="tgl('wifi_pass',this)"><svg class="icon" style="width:17px;height:17px"><use href="#i-eye"/></svg></button></div></div>
+        </div>
+        <div class="row">
+          <div class="field" id="ap_channel_div"><label for="wifi_chan">Channel</label>
+            <select id="wifi_chan" name="wifi_chan" form="settings_form">
+              <option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option><option value="13">13</option>
+            </select>
+          </div>
+          <div class="field" id="ap_ip_div"><label for="ap_ip">Gateway IP address</label><input type="text" name="ap_ip" id="ap_ip" value=""></div>
+        </div>
+        <div id="wifi_en_gn_div"><label class="switch-row"><span><b>802.11 b/g/n/ax</b><small>Enable newer Wi-Fi standards when extra bandwidth is needed.</small></span><span class="sw"><input id="wifi_en_gn" name="wifi_en_gn" type="checkbox"><i></i></span></label></div>
+        <div id="radio_dis_onarm_div"><label class="switch-row"><span><b>Disable radio when armed</b><small>Cut interference while the autopilot is running a mission.</small></span><span class="sw"><input id="radio_dis_onarm" name="radio_dis_onarm" type="checkbox"><i></i></span></label></div>
+        <div id="ant_use_ext_div" style="display:none"><label class="switch-row"><span><b>Use external antenna</b><small>Route the radio through the external antenna connector.</small></span><span class="sw"><input id="ant_use_ext" name="ant_use_ext" type="checkbox"><i></i></span></label></div>
+        <div id="static_ip_config_div" style="display:none">
+          <details><summary>Advanced Wi-Fi settings</summary><div class="details-body row">
+            <div class="field" id="ip_sta_div"><label for="ip_sta">Static IP</label><input type="text" name="ip_sta" id="ip_sta" maxlength="15" placeholder="optional"></div>
+            <div class="field" id="ip_sta_gw_div"><label for="ip_sta_gw">Static gateway</label><input type="text" name="ip_sta_gw" id="ip_sta_gw" maxlength="15" placeholder="optional"></div>
+            <div class="field" id="ip_sta_netmsk_div"><label for="ip_sta_netmsk">Netmask</label><input type="text" name="ip_sta_netmsk" id="ip_sta_netmsk" maxlength="15" placeholder="optional"></div>
+            <div class="field" id="wifi_hostname_div"><label for="wifi_hostname">Hostname</label><input type="text" name="wifi_hostname" id="wifi_hostname" maxlength="31" placeholder="DBBCompanion"></div>
+          </div></details>
+        </div>
+      </div>
+    </section>
+
+    <section id="serial" class="panel">
+      <header><span class="p-ico"><svg class="icon"><use href="#i-serial"/></svg></span><div><h2>Serial</h2><p>UART pins, protocol, rate and packet handling.</p></div><span class="tag">UART</span></header>
+      <div class="body">
+        <div class="sub">Pin assignment</div>
+        <div id="tx_rx_div"><div class="row">
+          <div class="field"><label for="gpio_tx">TX GPIO</label><input type="number" name="gpio_tx" id="gpio_tx" value=""></div>
+          <div class="field"><label for="gpio_rx">RX GPIO</label><input type="number" name="gpio_rx" id="gpio_rx" value=""></div>
+        </div></div>
+        <div id="rts_cts_div"><div class="row">
+          <div class="field"><label for="gpio_rts">RTS GPIO</label><input type="number" name="gpio_rts" id="gpio_rts" value="" onchange="flow_control_check()"></div>
+          <div class="field"><label for="gpio_cts">CTS GPIO</label><input type="number" name="gpio_cts" id="gpio_cts" value="" onchange="flow_control_check()"></div>
+        </div></div>
+        <div class="row" id="rts_thresh_div">
+          <div class="field"><label for="rts_thresh">RTS threshold</label><input type="number" id="rts_thresh" name="rts_thresh" min="1" max="128"></div>
+        </div>
+        <div class="sub">Protocol &amp; transport</div>
+        <div class="row">
+          <div class="field"><label>Serial protocol</label><div class="static-field"><b>MAVLink 2</b></div><input type="hidden" id="proto" name="proto" value="4" form="settings_form"></div>
+          <div class="field" id="baud_div"><label for="baud">UART baud</label><select name="baud" id="baud" form="settings_form">
+            <option value="5000000">5000000</option><option value="3000000">3000000</option><option value="2000000">2000000</option><option value="1500000">1500000</option><option value="1000000">1000000</option><option value="921600">921600</option><option value="576000">576000</option><option value="500800">500800</option><option value="460800">460800</option><option value="230400">230400</option><option value="115200">115200</option><option value="76800">76800</option><option value="57600">57600</option><option value="38400">38400</option><option value="19200">19200</option><option value="9600">9600</option><option value="4800">4800</option><option value="2400">2400</option><option value="1200">1200</option>
+          </select></div>
+        </div>
+        <div id="msp_ltm_div" class="row one" style="display:none">
+          <div class="field"><label for="ltm_per_packet">LTM frames / packet</label><select id="ltm_per_packet" name="ltm_per_packet" form="settings_form"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select></div>
+        </div>
+        <div id="trans_pack_size_div"><div class="row">
+          <div class="field"><label for="trans_pack_size">Maximum packet size</label><select id="trans_pack_size" name="trans_pack_size" form="settings_form">
+            <option value="16">16</option><option value="32">32</option><option value="64">64</option><option value="96">96</option><option value="128">128</option><option value="160">160</option><option value="192">192</option><option value="256">256</option><option value="288">288</option><option value="320">320</option><option value="384">384</option><option value="448">448</option><option value="512">512</option><option value="576">576</option><option value="640">640</option><option value="704">704</option><option value="768">768</option><option value="832">832</option><option value="896">896</option><option value="960">960</option><option value="1024">1024</option><option value="1056">1056</option>
+          </select></div>
+          <div class="field"><label for="serial_timeout">Serial read timeout [ms]</label><input type="number" id="serial_timeout" name="serial_timeout" min="1" max="65535" value="50"></div>
+        </div></div>
+        <div id="rep_rssi_dbm_div"><label class="switch-row"><span><b>Report RSSI in dBm</b><small>Use dBm instead of the normalized 0&ndash;100 scale.</small></span><span class="sw"><input id="rep_rssi_dbm" name="rep_rssi_dbm" type="checkbox"><i></i></span></label></div>
+      </div>
+    </section>
+
+    <section id="sonar" class="panel">
+      <header><span class="p-ico" style="background:rgba(51,192,192,.13);color:var(--teal);border-color:rgba(51,192,192,.25)"><svg class="icon"><use href="#i-sonar"/></svg></span><div><h2>Hardwired &amp; Deeper Sonar</h2><p>Two depth sources, one live picture.</p></div><span class="tag" style="background:rgba(51,192,192,.12);color:var(--teal);border-color:rgba(51,192,192,.25)">SONAR</span></header>
+      <div class="body">
+        <div class="sonar-cols">
+          <article class="subcard">
+            <div class="subhead"><div><h3>Hardwired Sonar</h3><small>UART depth sensor</small></div><label class="sw"><input id="ss_hardwired_en" name="ss_hardwired_en" type="checkbox" onchange="change_hardwired_visibility()"><i></i></label></div>
+            <div id="sonar_gpio_div"><div class="row">
+              <div class="field"><label for="ss_tx_pin">TX GPIO</label><input type="number" name="ss_tx_pin" id="ss_tx_pin" min="0" max="39"></div>
+              <div class="field"><label for="ss_rx_pin">RX GPIO</label><input type="number" name="ss_rx_pin" id="ss_rx_pin" min="0" max="39"></div>
+            </div></div>
+            <div id="ss_hardwired_summary_div">
+              <div class="gauge"><div><small>Published depth</small><div class="big" id="ss_hardwired_depth">Waiting for UART frame</div></div><div class="wave"></div></div>
+              <div class="reads">
+                <div class="read"><small>Last raw reading</small><div class="deeper-readout" id="ss_hardwired_raw">No raw frame yet</div></div>
+                <div class="read"><small>Filter status</small><div class="deeper-readout" id="ss_hardwired_filter_status">Waiting for first good reading</div></div>
+              </div>
+            </div>
+            <div id="ss_hardwired_debug_div"><label class="console-lbl" for="ss_hardwired_debug"><span style="font-size:11.5px;font-weight:700;color:var(--muted)">Recent hardwired frames</span></label><textarea id="ss_hardwired_debug" class="debug-window" readonly spellcheck="false">Waiting for hardwired traffic...</textarea></div>
+          </article>
+          <article class="subcard">
+            <div class="subhead"><div><h3>Deeper Sonar</h3><small>Wi-Fi fallback source</small></div><label class="sw"><input id="ss_deeper_en" name="ss_deeper_en" type="checkbox" onchange="change_deeper_visibility()"><i></i></label></div>
+            <div id="ss_deeper_ssid_div">
+              <div class="field"><label for="ss_deeper_ssid">Deeper SSID</label><input type="text" name="ss_deeper_ssid" id="ss_deeper_ssid" maxlength="31" value=""></div>
+              <div class="field" id="ss_deeper_pass_div" style="margin-top:12px"><label for="ss_deeper_pass">Deeper password</label><input type="password" name="ss_deeper_pass" id="ss_deeper_pass" maxlength="63" placeholder="Leave empty for open AP"></div>
+            </div>
+            <div id="ss_deeper_summary_div"><div class="reads" style="margin-top:12px">
+              <div class="read"><small>Depth</small><div class="deeper-readout" id="ss_deeper_depth">Waiting for $SDDBT</div></div>
+              <div class="read"><small>Water temp</small><div class="deeper-readout" id="ss_deeper_temp">Waiting for $YXMTW</div></div>
+              <div class="read"><small>Satellites / fix</small><div class="deeper-readout" id="ss_deeper_satellites">Waiting for $GNGGA</div></div>
+              <div class="read"><small>GPS</small><div class="deeper-readout" id="ss_deeper_coordinates">Waiting for valid fix</div></div>
+            </div></div>
+            <div id="ss_deeper_debug_div"><label class="console-lbl" for="ss_deeper_debug"><span style="font-size:11.5px;font-weight:700;color:var(--muted)">Recent Deeper packets</span></label><textarea id="ss_deeper_debug" class="debug-window" readonly spellcheck="false">Waiting for Deeper traffic...</textarea></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    </form>
+
+    <section id="logs" class="panel">
+      <header><span class="p-ico"><svg class="icon"><use href="#i-logs"/></svg></span><div><h2>Persistent Sonar Log</h2><p>Review, download or clear captured depth diagnostics.</p></div><span class="tag">LOGS</span></header>
+      <div class="body">
+        <div id="sonar_log_status" class="deeper-readout" style="color:var(--muted);font-size:12px;margin-bottom:12px">Waiting for persistent sonar log status...</div>
+        <textarea id="sonar_persistent_log" class="big-console" readonly spellcheck="false">Waiting for persistent sonar log...</textarea>
+        <div class="row-actions">
+          <button type="button" class="btn" onclick="refresh_sonar_log()"><svg class="icon"><use href="#i-refresh"/></svg> Read / Refresh</button>
+          <button type="button" class="btn" onclick="download_sonar_log()"><svg class="icon"><use href="#i-rx"/></svg> Download</button>
+          <button type="button" class="btn danger grow" onclick="clear_sonar_log()">Clear log</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="update" class="panel">
+      <header><span class="p-ico"><svg class="icon"><use href="#i-update"/></svg></span><div><h2>Wireless Update &amp; Recovery</h2><p>Over-the-air firmware / web-UI update and recovery portal.</p></div><span class="tag">OTA</span></header>
+      <div class="body">
+        <p style="color:var(--muted);margin:0 0 16px">The updater lives inside the firmware image itself, so it stays reachable even if the web UI partition is damaged.</p>
+        <a class="btn accent" href="/ota"><svg class="icon"><use href="#i-update"/></svg> Open Wireless Update &amp; Recovery</a>
+      </div>
+    </section>
+
+    <section class="savebar">
+      <div><b>Ready to apply changes?</b><small>The Companion saves to flash, reboots and reconnects on the new settings.</small></div>
+      <button type="button" class="btn accent" onclick="save_settings()"><svg class="icon"><use href="#i-check"/></svg> Save settings &amp; reboot</button>
+    </section>
+
+    <footer>
+      <div id="about">&reg;Danevi Bait Boats v0.1 ota_x &middot; Valentin Danev &middot; Valentin@danevi.info &middot; +359 882 619 117<span class="credit">Built on <a href="https://github.com/DroneBridge/ESP32" target="_blank" rel="noopener">DroneBridge for ESP32</a> (Apache-2.0) by Wolfgang Christl</span></div>
+    </footer>
+  </main>
+</div>
+
+<script>
+function tgl(id,btn){var e=document.getElementById(id);if(e)e.type=e.type==='password'?'text':'password';}
+// scroll-spy nav
+var _secs=[...document.querySelectorAll('main section[id]')];
+var _links=[...document.querySelectorAll('.nav a')];
+function _setActive(id){_links.forEach(function(l){l.classList.toggle('active',l.getAttribute('href')==='#'+id);});}
+function _updateActive(){
+  var y=window.scrollY||window.pageYOffset;
+  if((window.innerHeight+y)>=(document.documentElement.scrollHeight-4)){_setActive('update');return;} // bottom -> last item
+  if(y<200){_setActive('overview');return;} // top -> first item
+  var line=y+window.innerHeight*0.4, current=_secs[0].id;
+  for(var i=0;i<_secs.length;i++){var top=_secs[i].getBoundingClientRect().top+y; if(top<=line)current=_secs[i].id; else break;}
+  _setActive(current);
+}
+window.addEventListener('scroll',_updateActive,{passive:true});
+window.addEventListener('resize',_updateActive);
+_updateActive();
+
+// ---- firmware data layer bootstrap (dronebridge.js) ----
+while (get_system_info() < 0) {}
+while (get_settings() < 0) {}
+setInterval(get_stats, 500);
+setInterval(update_conn_status, 500);
+setInterval(get_sonar_log_status, 5000);
+setInterval(check_for_issues, 1000);
+setTimeout(change_msp_ltm_visibility, 500);
+setTimeout(change_ap_ip_visibility, 500);
+setTimeout(change_uart_visibility, 500);
+setTimeout(change_hardwired_visibility, 500);
+setTimeout(change_deeper_visibility, 500);
+</script>
+</body>
+</html>
