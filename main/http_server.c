@@ -601,8 +601,7 @@ static esp_err_t system_stats_get_handler(httpd_req_t *req) {
     if (runtime_sta) {
         cJSON_AddStringToObject(root, "current_client_ip", CURRENT_CLIENT_IP);
         cJSON_AddNumberToObject(root, "esp_rssi", db_esp_signal_quality.air_rssi);
-    } else if (runtime_ap && (DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP ||
-                              DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP_LR)) {
+    } else if (runtime_ap && DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP) {
         cJSON *sta_array = cJSON_AddArrayToObject(root, "connected_sta");
         for (int i = 0; i < wifi_sta_list.num; i++) {
             cJSON *connected_stations_status = cJSON_CreateObject();

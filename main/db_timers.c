@@ -75,8 +75,7 @@ void db_timer_wifi_rssi_callback(TimerHandle_t pxTimer) {
     } else { /* all good */
     }
   } else if (db_wifi_runtime_has_ap() &&
-             (DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP ||
-              DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP_LR)) {
+             DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP) {
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_ap_get_sta_list(
         &wifi_sta_list)); // update list of connected stations
   }
@@ -113,16 +112,9 @@ void db_timer_mavlink_heartbeat_callback(TimerHandle_t pxTimer) {
     return; // Do not send heartbeat in non mavlink modes
   }
   if (db_get_mav_sys_id() != 0) {
-    if (DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP_LR) {
-      // In AP LR mode the heartbeat has to be emitted
-      // via serial directly to the GCS
-      uint16_t length = db_mav_create_heartbeat(buff, &fmav_status_serial);
-      write_to_serial(buff, length);
-    } else {
-      // Send heartbeat via radio interface
-      uint16_t length = db_mav_create_heartbeat(buff, &fmav_status_radio);
-      db_send_to_all_radio_clients(buff, length);
-    }
+    // Send heartbeat via radio interface
+    uint16_t length = db_mav_create_heartbeat(buff, &fmav_status_radio);
+    db_send_to_all_radio_clients(buff, length);
   } else {
     // haven't seen a system ID from the FC yet so do not send any heartbeat or
     // heartbeats disabled

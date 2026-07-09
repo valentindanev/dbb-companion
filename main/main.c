@@ -630,14 +630,7 @@ void db_init_wifi_apmode(int wifi_mode) {
 #pragma GCC diagnostic pop
 
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-  if (wifi_mode == DB_WIFI_MODE_AP_LR) {
-    ESP_LOGI(TAG, "Enabling LR Mode on access point. This device will be "
-                  "invisible to non-ESP32 devices!");
-    ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B |
-                                                          WIFI_PROTOCOL_LR));
-  } else {
-    ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B));
-  }
+  ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
   wifi_country_t wifi_country = {.cc = "US",
                                  .schan = 1,
@@ -1103,7 +1096,6 @@ void app_main() {
   } else {
   switch (boot_radio_mode) {
   case DB_WIFI_MODE_AP:
-  case DB_WIFI_MODE_AP_LR:
     if (DB_PARAM_DEEPER_EN) {
       char original_wifi_ssid[MAX_SSID_LEN] = {0};
       char original_wifi_pass[DB_PARAM_VALUE_MAXLEN] = {0};
@@ -1213,9 +1205,8 @@ void app_main() {
     ESP_LOGI(TAG, "No hardwired sonar source selected for this boot.");
   }
 
-  if (boot_radio_mode != DB_WIFI_MODE_AP_LR) {
-    // no need to start these services - won`t be available anyway - safe the
-    // resources
+  {
+    // mDNS + NetBIOS are useful in every remaining Wi-Fi mode (AP/STA).
     start_mdns_service();
     netbiosns_init();
     netbiosns_set_name("dronebridge");
@@ -1254,9 +1245,8 @@ void app_main() {
   // component, if linked, overrides these hooks at link time (see README).
   dbb_brain_init();
 
-  if (boot_radio_mode != DB_WIFI_MODE_AP_LR) {
-    // no need to start these services - won`t be available anyway - safe the
-    // resources
+  {
+    // The web dashboard is served in every remaining Wi-Fi mode (AP/STA).
     ESP_ERROR_CHECK(start_rest_server(CONFIG_WEB_MOUNT_POINT));
     ESP_LOGI(TAG, "Rest Server started");
     // Disable legacy support for DroneBridge communication module - no use case

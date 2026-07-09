@@ -221,78 +221,6 @@ int db_open_serial_udp_socket() {
 }
 
 /**
- * Opens non-blocking UDP socket used for internal DroneBridge telemetry. Socket shall only be opened when local ESP32
- * is in client mode. Socket is used to receive internal Wifi telemetry from the ESP32 access point we are connected to.
- * @return returns socket file descriptor
- */
-int db_open_int_telemetry_udp_socket() {
-    // Create a socket for sending to the multicast address
-    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
-    if (sock < 0) {
-        ESP_LOGE(TAG, "Failed to create socket. Error %d", errno);
-        return -1;
-    }
-    struct sockaddr_in saddr = {0};
-    // Bind the socket to any address
-    saddr.sin_family = PF_INET;
-    saddr.sin_port = htons(DB_ESP32_INTERNAL_TELEMETRY_PORT);
-    saddr.sin_addr.s_addr = htonl(INADDR_ANY);
-    esp_err_t err = bind(sock, (struct sockaddr *) &saddr, sizeof(struct sockaddr_in));
-    if (err < 0) {
-        ESP_LOGE(TAG, "Failed to bind socket. Error %d", errno);
-        return -1;
-    }
-
-    // Set the time-to-live of messages to 1 so they do not go past the local network
-    int ttl = MULTICAST_TTL;
-    if (setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl)) < 0) {
-        ESP_LOGE(TAG, "Failed to set IP_MULTICAST_TTL. Error %d", errno);
-        close(sock);
-        return -1;
-    }
-
-    fcntl(sock, F_SETFL, O_NONBLOCK);
-
-    if (db_wifi_runtime_has_sta()) {
-        // Configure for listening when in station mode
-        struct ip_mreq imreq = {0};
-        struct in_addr iaddr = {0};
-        // Configure source interface
-        imreq.imr_interface.s_addr = IPADDR_ANY;
-        // Configure multicast address to listen to
-        err = inet_aton(MULTICAST_IPV4_ADDR, &imreq.imr_multiaddr.s_addr);
-        if (err != 1) {
-            ESP_LOGE(TAG, "Configured IPV4 multicast address '%s' is invalid.", MULTICAST_IPV4_ADDR);
-            // Errors in the return value have to be negative
-            close(sock);
-            return -1;
-        }
-        ESP_LOGI(TAG, "Configured internal Multicast address %s", inet_ntoa(imreq.imr_multiaddr.s_addr));
-        if (!IP_MULTICAST(ntohl(imreq.imr_multiaddr.s_addr))) {
-            ESP_LOGW(TAG,
-                     "Configured IPV4 multicast address '%s' is not a valid multicast address. This will probably not work.",
-                     MULTICAST_IPV4_ADDR);
-        }
-
-        err = setsockopt(sock, IPPROTO_IP, IP_MULTICAST_IF, &iaddr, sizeof(struct in_addr));
-        if (err < 0) {
-            ESP_LOGE(TAG, "Failed to set IP_MULTICAST_IF. Error %d", errno);
-            close(sock);
-            return -1;
-        }
-
-        err = setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &imreq, sizeof(struct ip_mreq));
-        if (err < 0) {
-            ESP_LOGE(TAG, "Failed to set IP_ADD_MEMBERSHIP. Error %d", errno);
-            close(sock);
-            return -1;
-        }
-    }
-    ESP_LOGI(TAG, "Opened internal telemetry socket on port: %i", DB_ESP32_INTERNAL_TELEMETRY_PORT);
-    return sock;
-}
-
-/**
  * Sends data to all clients that are part of the udp connection list. No resending of packets in case of failure.
  * Special behavior in DroneShow Edition:
  *  - If there is no UDP client detected or manually set, we send packets to broadcast address and pre-defined port so
@@ -531,98 +459,6 @@ void read_process_serial_link(int *tcp_clients, uint *transparent_buff_pos,
 }
 
 /**
- * Sends DroneBridge internal telemetry to tell every connected WiFi station how well we receive their data (rssi).
- * Uses UDP multicast message. Format: [NUM_Entries - (MAC + RSSI) - (MAC + RSSI) - ...]
- * Internal telemetry uses DB_ESP32_INTERNAL_TELEMETRY_PORT port
- *
- * @param sta_list
- */
-void db_send_internal_telemetry_to_stations(int tel_sock, wifi_sta_list_t *sta_list, udp_conn_list_t *udp_conns) {
-    if (DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP_LR && udp_conns->size > 0 && sta_list->num > 0) {
-        char addr_buf[32] = {0};
-        struct addrinfo hints = {
-                .ai_flags = AI_PASSIVE,
-                .ai_socktype = SOCK_DGRAM,
-        };
-        struct addrinfo *res;
-
-        // Send an IPv4 multicast packet
-        hints.ai_family = AF_INET; // For an IPv4 socket
-        int err = getaddrinfo(MULTICAST_IPV4_ADDR, NULL, &hints, &res);
-        if (err < 0) {
-            ESP_LOGE(TAG, "getaddrinfo() failed for IPV4 destination address. error: %d", err);
-            return;
-        }
-        if (res == 0) {
-            ESP_LOGE(TAG, "getaddrinfo() did not return any addresses");
-            return;
-        }
-        ((struct sockaddr_in *) res->ai_addr)->sin_port = htons(DB_ESP32_INTERNAL_TELEMETRY_PORT);
-        inet_ntoa_r(((struct sockaddr_in *) res->ai_addr)->sin_addr, addr_buf, sizeof(addr_buf) - 1);
-        static uint8_t buffer[1280] = {0};
-        uint16_t buffer_pos = 1;    // we start at 1 since we want to put the count in position 0
-        uint8_t already_sent = 0;
-        for (int i = 0; i < sta_list->num; i++) {
-            if ((buffer_pos + 7) < 1280) {
-                memcpy(&buffer[buffer_pos], sta_list->sta[i].mac, 6);
-                buffer_pos += 6;
-                buffer[buffer_pos] = sta_list->sta[i].rssi;
-                buffer_pos++;
-            } else {
-                // packet would get too long. Sent this chunk already
-                buffer[0] = (uint8_t) i;    // first byte shall be the number of entries in the packet
-                sendto(tel_sock, buffer, buffer_pos, 0, res->ai_addr, res->ai_addrlen);
-                already_sent += i;
-                buffer_pos = 1;
-            }
-        }
-        buffer[0] = (uint8_t) sta_list->num - already_sent;
-        err = sendto(tel_sock, buffer, buffer_pos + 1, 0, res->ai_addr, res->ai_addrlen);
-        freeaddrinfo(res);
-        if (err < 0) {
-            ESP_LOGE(TAG, "Internal telemetry sendto failed. errno: %d", errno);
-            return;
-        }
-    } else {
-        // in other modes we cannot do that. ESP-NOW uses a different function and way of telling
-    }
-}
-
-/**
- * Receive and process internal telemetry (ESP32 AP to ESP32 Station) sent by ESP32 LR access point.
- * Matches with db_send_internal_telemetry_to_stations()
- * Sets station_rssi_ap based on the received value
- * Packet format: [NUM_Entries, (MAC + RSSI), (MAC + RSSI), (MAC + RSSI), ...]
- *
- * @param tel_sock Socket listening for internal telemetry
- */
-void handle_internal_telemetry(int tel_sock, uint8_t *udp_buffer, socklen_t *sock_len, struct sockaddr_in *udp_client) {
-    if (tel_sock > 0) {
-        ssize_t recv_length = recvfrom(tel_sock, udp_buffer, UDP_BUF_SIZE, 0,
-                                       (struct sockaddr *) udp_client, sock_len);
-        if (recv_length > 0) {
-            ESP_LOGD(TAG, "Got internal telem. frame containing %i entries", udp_buffer[0]);
-            int max_parse_len = recv_length;
-            int expected_len = 1 + (udp_buffer[0] * 7);
-            if (expected_len < max_parse_len) {
-                max_parse_len = expected_len;
-            }
-            for (int i = 1; (i + 6) < max_parse_len; i += 7) {
-                if (memcmp(LOCAL_MAC_ADDRESS, &udp_buffer[i], 6) == 0) {
-                    // found us in the list (this local ESP32 AIR unit) -> update internal telemetry buffer,
-                    // so it gets sent with next Mavlink RADIO STATUS in case MAVLink radio status is enabled
-                    db_esp_signal_quality.gnd_rssi = (int8_t) udp_buffer[i + 6];
-                    ESP_LOGD(TAG, "AP receives our packets with RSSI: %i", db_esp_signal_quality.gnd_rssi);
-                    break;
-                } else {
-                    // keep on looking for our MAC
-                }
-            }
-        } else {/* received nothing - socket is non-blocking */}
-    } else {/* socket failed to init or was never inited */}
-}
-
-/**
  * Thread that manages all incoming and outgoing TCP, UDP and serial (UART) connections.
  * Executed when Wi-Fi modes are set - ESP-NOW has its own thread
  */
@@ -649,13 +485,6 @@ _Noreturn void control_module_udp_tcp() {
     }
 
     udp_conn_list->udp_socket = db_open_serial_udp_socket();
-    int db_internal_telem_udp_sock = -1;
-    if (DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP_LR || db_wifi_runtime_has_sta()) {
-        db_internal_telem_udp_sock = db_open_int_telemetry_udp_socket();
-    } else {
-        // other Wi-Fi modes do not need this. Only Wi-Fi stations will receive if connected to LR access point.
-        // ESP-NOW uses different sockets/systems
-    }
     uint8_t udp_buffer[UDP_BUF_SIZE];
     struct db_udp_client_t new_db_udp_client = {0};
     socklen_t udp_socklen = sizeof(new_db_udp_client.udp_client);
@@ -740,13 +569,6 @@ _Noreturn void control_module_udp_tcp() {
         } else {
             // received nothing, keep on going
         }
-        if (db_wifi_runtime_has_sta()) {
-            handle_internal_telemetry(db_internal_telem_udp_sock, udp_buffer, &udp_socklen,
-                                      &new_db_udp_client.udp_client);
-        } else {
-            // internal telemetry only received when in STA mode. Coming from the ESP32 AP. Nothing to do here
-        }
-
         // Second check for incoming UART data and send it to TCP/UDP
         read_process_serial_link(connected_tcp_clients, &transparent_buff_pos, msp_message_buffer, serial_buffer);
         if (serial_total_byte_count != prev_serial_count) data_processed = true;
@@ -767,7 +589,6 @@ _Noreturn void control_module_udp_tcp() {
             } else if (!DB_RADIO_IS_OFF && db_wifi_runtime_has_ap()) {
                 ESP_ERROR_CHECK_WITHOUT_ABORT(
                         esp_wifi_ap_get_sta_list(&wifi_sta_list)); // update list of connected stations
-                db_send_internal_telemetry_to_stations(db_internal_telem_udp_sock, &wifi_sta_list, udp_conn_list);
             } else {
                 // no way of getting RSSI here. Do nothing
             }

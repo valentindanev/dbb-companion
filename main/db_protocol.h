@@ -67,7 +67,6 @@
 #define APP_PORT_PROXY_UDP	14550 // use this port for all MAVLink messages (UDP)
 #define APP_PORT_VIDEO      5000 // app accepts raw H.264 streams
 #define APP_PORT_VIDEO_FEC  5001 // app accepts raw DroneBridge video stream data, performs FEC on Android device
-#define DB_ESP32_INTERNAL_TELEMETRY_PORT    1606
 #define UDP_BROADCAST_PORT_SKYBRUSH 14555
 
 #define	MAX_PENUMBRA_INTERFACES 8

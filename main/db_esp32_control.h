@@ -23,8 +23,6 @@
 #include <lwip/sockets.h>
 #include <stddef.h>
 
-#define MULTICAST_IPV4_ADDR "232.10.11.12"  // used for internal telemetry messages between ESP32s
-#define MULTICAST_TTL 1
 #define MAX_UDP_CLIENTS 8
 #define TRANS_RD_BYTES_NUM  8   // amount of bytes read form serial port at once when transparent/MSP/LTM is selected
 #define UDP_BUF_SIZE    2048

@@ -327,12 +327,11 @@ void handle_mavlink_message(fmav_message_t *new_msg, int *tcp_clients, udp_conn_
                 if (payload.autopilot == MAV_AUTOPILOT_INVALID && payload.type == MAV_TYPE_GCS) {
                     ESP_LOGD(TAG, "Got heartbeat from GCS (sysID: %i)", new_msg->sysid);
                     DB_MAV_SYS_ID = new_msg->sysid;
-                    // We must be in AP LR mode
-                    if (DB_PARAM_RADIO_MODE != DB_WIFI_MODE_AP_LR) {
-                        ESP_LOGW(TAG, "We received a heartbeat from GCS while not being in "
-                                      "DB_WIFI_MODE_AP_LR mode. Check your configuration! AIR-Side ESP32 seems to be "
-                                      "connected to GCS via UART");
-                    }
+                    // The FC-side ESP32 talks to a flight controller over UART, not a GCS.
+                    // A GCS heartbeat on the UART means the wiring/configuration is wrong.
+                    ESP_LOGW(TAG, "Received a heartbeat from a GCS on the UART. Check your "
+                                  "configuration - this ESP32 should be wired to a flight "
+                                  "controller, not a ground station.");
                 } else if (payload.autopilot != MAV_AUTOPILOT_INVALID && new_msg->compid == MAV_COMP_ID_AUTOPILOT1) {
                     ESP_LOGD(TAG, "Got heartbeat from flight controller (sysID: %i)", new_msg->sysid);
                     // This means we are connected to the FC since we only parse mavlink on UART and thus only see the
