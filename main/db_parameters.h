@@ -114,13 +114,9 @@
   (char *)db_param_deeper_pass.value.db_param_str.value
 
 enum E_DB_WIFI_MODE {
-  DB_WIFI_MODE_AP = 1,    // Wi-Fi access point mode with 802.11b mode enabled
-  DB_WIFI_MODE_STA = 2,   // Wi-Fi client mode with 802.11b and LR mode enabled
-  DB_WIFI_MODE_AP_LR = 3, // ESP32 WiFi LR Mode 802.11b
-  DB_WIFI_MODE_ESPNOW_AIR = 4, // ESP-NOW Mode for broadcasting device
-  DB_WIFI_MODE_ESPNOW_GND = 5, // ESP-NOW Mode for GND station
-  DB_BLUETOOTH_MODE = 6,       // Bluetooth BLE mode
-  DB_WIFI_MODE_END = 7,        // End of enum
+  DB_WIFI_MODE_AP = 1,  // Wi-Fi access point mode (802.11b) - default, serves the dashboard
+  DB_WIFI_MODE_STA = 2, // Wi-Fi client mode (802.11b + LR) - e.g. to join a Deeper sonar
+  DB_WIFI_MODE_END = 3, // Keep last. Marks the end of the valid-mode range.
 };
 
 enum E_DB_SERIAL_PROTOCOL {

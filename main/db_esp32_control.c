@@ -262,7 +262,7 @@ void db_send_to_all_clients(int tcp_clients[], udp_conn_list_t *n_udp_conn_list,
 
 /**
  * New function to replace the legacy db_send_to_all_clients(). No need to pass tcp & udp clients
- * Sends the message to all connected clients using the radio (WiFi, ESP-NOW or BLE) link.
+ * Sends the message to all connected clients over the WiFi (TCP/UDP) link.
  * @param data
  * @param data_length
  */

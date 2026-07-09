@@ -76,11 +76,14 @@ db_parameter_t db_param_radio_mode = {
                   .value = DB_WIFI_MODE_AP,
                   .default_value = DB_WIFI_MODE_AP,
                   .min = DB_WIFI_MODE_AP,
-                  .max = DB_WIFI_MODE_END,
+                  // Highest valid mode is STA. Any stale NVS value above this
+                  // (old AP-LR/ESP-NOW/BLE modes) fails validation on load and
+                  // is reset to the default (AP).
+                  .max = DB_WIFI_MODE_STA,
               }}};
 
 /**
- * Radio channel in WiFi AP and ESP-NOW mode
+ * Radio channel in WiFi AP mode
  */
 db_parameter_t db_param_channel = {.db_name = "wifi_chan",
                                    .type = UINT8,
@@ -276,8 +279,7 @@ db_parameter_t db_param_proto = {
               }}};
 
 /**
- * Maximum packet size via ESP-NOW or WiFi in transparent or mavlink mode. Caped
- * to 250 bytes-HEADER in ESP-NOW mode.
+ * Maximum packet size via WiFi in transparent or mavlink mode.
  */
 db_parameter_t db_param_serial_pack_size = {
     .db_name = "trans_pack_size",
@@ -533,7 +535,7 @@ void db_param_init_parameters() {
   // Wi-Fi AP SSID name OR Wi-Fi AP SSID name to connect to in Wi-Fi client mode
   db_param_ssid = db_param_init_str_param(
       "ssid", "SYS_SSID", "DaneviBaitBoats", 1, MAX_SSID_LEN);
-  // Password for Wi-Fi connections & ESP-NOW encryption.
+  // Password for Wi-Fi connections.
   db_param_pass =
       db_param_init_str_param("wifi_pass", "SYS_PASS", "DaneviBaitBoats", 7, 64);
   // IPv4 of the Wi-Fi access point when in Wi-Fi AP mode
