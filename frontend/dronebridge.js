@@ -2,19 +2,32 @@ const ROOT_URL = window.location.origin + "/"       // base URL only (no #hash /
 // const ROOT_URL = "http://localhost:3000/"   // for testing with local json server
 let conn_status = 0;		// connection status to the ESP32
 let old_conn_status = 0;	// connection status before last update of UI to know when it changed
+// The boat's Wi-Fi link drops the occasional packet (hull-mounted ESP, 802.11b).
+// One lost poll is normal and must not be reported as "disconnected": every flip
+// of conn_status makes update_conn_status() fire four extra requests, which on a
+// lossy link provokes the next drop. Only call the link down after this many
+// consecutive failures - a real outage fails every poll and still trips quickly.
+const CONN_FAIL_THRESHOLD = 3;
+let conn_fail_count = 0;
 let serial_via_JTAG = 0;	// set to 1 if ESP32 is using the USB interface as serial interface for data and not using the UART. If 0 we set UART config to invisible for the user.
 let last_byte_count = 0;
+let last_sent_byte_count = 0;
 let last_timestamp_byte_count = 0;
 let esp_chip_model = 0;		// according to get_esp_chip_model_str()
 let recv_ser_bytes = 0;		// Total bytes received from serial interface
+let sent_ser_bytes = 0;		// Total bytes successfully written to serial interface
 let serial_dec_mav_msgs = 0;	// Total MAVLink messages decoded from serial interface
 let set_telem_proto = null;		// Telemetry protocol received by the ESP32
 let active_sonar_source = 0;	// 0 none, 1 hardwired, 2 deeper
 let cached_system_info = null;
 let cached_runtime_info = null;
 let cached_sonar_log_status = null;
-const REQUEST_TIMEOUT_MS = 1000;
-
+let esp_uptime_ms = null;
+// 1000 ms was too tight: a single TCP retransmit on the boat link exceeds it.
+// get_stats() polls every 500 ms, so a longer timeout could stack requests -
+// s_stats_in_flight below skips a tick while one is still outstanding.
+const REQUEST_TIMEOUT_MS = 2500;
+let s_stats_in_flight = false;
 function is_abort_like_error(error) {
 	if (!error) {
 		return false;
@@ -207,8 +220,12 @@ function toJSONString(form) {
 			if (element.type === "checkbox") {
 				// convert checked/not checked to 1 & 0 as value
 				obj[name] = element.checked ? 1 : 0;
-			} else if ((element.type === "number" || element.tagName === "SELECT") &&
-				!isNaN(Number(value))) {
+			} else if ((element.type === "number" || element.tagName === "SELECT" ||
+				element.dataset.number !== undefined) && !isNaN(Number(value))) {
+				// data-number marks inputs that are numeric on the ESP but not
+				// type="number" in the form (hidden fields). Without it they are
+				// sent as text, cJSON reads valueint as 0, and the ESP rejects
+				// the value.
 				obj[name] = parseInt(value)
 			} else {
 				// treat all text/password inputs as strings so numeric passwords
@@ -235,16 +252,19 @@ async function get_json(api_path) {
 
 	try {
 		const response = await fetch(req_url, {
+			headers: {},
 			signal: controller.signal
 		});
 		if (!response.ok) {
 			const message = `An error has occured: ${response.status}`;
-			conn_status = 0;
 			throw new Error(message);
 		}
 		return await response.json();
 	} catch (error) {
-		conn_status = 0;
+		// Counted here and nowhere else, so one failed request is one failure.
+		// Callers used to set conn_status in their own catch as well, which
+		// double counted every drop.
+		note_conn_fail();
 		throw normalize_request_error(error);
 	} finally {
 		clearTimeout(timeout);
@@ -269,8 +289,22 @@ async function send_json(api_path, json_data = undefined) {
 		body: json_data
 	});
 	if (!response.ok) {
-		conn_status = 0
-		const message = `An error has occured: ${response.status}`;
+		// Not a connection problem: the board answered, it just refused the
+		// request (e.g. 400 for an out-of-range setting). Marking the link down
+		// here would flash "disconnected" every time a value is rejected.
+		note_conn_ok();
+		// The ESP explains refusals in the body - e.g. which setting was out of
+		// range and what the allowed range is. Show that instead of a bare
+		// status code, otherwise a rejected value looks like "it just did not save".
+		let message = `An error has occured: ${response.status}`;
+		try {
+			const body = await response.json();
+			if (body && body.msg) {
+				message = body.msg;
+			}
+		} catch (e) {
+			// body was not JSON - keep the status code message
+		}
 		throw new Error(message);
 	}
 	return await response.json();
@@ -286,10 +320,11 @@ async function get_text(api_path) {
 	try {
 		const response = await fetch(get_url, {
 			method: 'GET',
+			headers: {},
 			signal: controller.signal
 		});
 		if (!response.ok) {
-			conn_status = 0;
+			note_conn_ok(); // the board answered - the link is up
 			const body = await response.text();
 			throw new Error(body || `An error has occured: ${response.status}`);
 		}
@@ -322,11 +357,11 @@ function get_esp_chip_model_str(esp_model_index) {
 }
 
 function render_about_text() {
-	let branding_line = "DBB Companion v0.1 - waiting for a response from the ESP32";
+	let branding_line = "DBB Companion v0.2 - waiting for a response from the ESP32";
 	let runtime_line = "Running firmware version: waiting for OTA info from the ESP32";
 
 	if (cached_system_info !== null) {
-		branding_line = "DBB Companion v0.1 Forked from DroneBridge for ESP32 v" + cached_system_info["major_version"] +
+		branding_line = "DBB Companion v0.2 Forked from DroneBridge for ESP32 v" + cached_system_info["major_version"] +
 			"." + cached_system_info["minor_version"] + "." + cached_system_info["patch_version"] + " (" + cached_system_info["maturity_version"] + ")" +
 			" - esp-idf " + cached_system_info["idf_version"] + " - " + get_esp_chip_model_str(cached_system_info["esp_chip_model"]);
 	}
@@ -337,7 +372,37 @@ function render_about_text() {
 			" - " + cached_runtime_info["running_partition_label"];
 	}
 
-	document.getElementById("about").innerHTML = "&reg;Danevi Bait Boats v0.1 " + (cached_runtime_info !== null ? cached_runtime_info["running_partition_label"] : "ota_x") + " &middot; Valentin Danev &middot; Valentin@danevi.info &middot; +359 882 619 117" + "<span class=\"credit\">Built on <a href=\"https://github.com/DroneBridge/ESP32\" target=\"_blank\" rel=\"noopener\">DroneBridge for ESP32</a> (Apache-2.0) by Wolfgang Christl</span>";
+	document.getElementById("about").innerHTML = "&reg;Danevi Bait Boats v0.2 " + (cached_runtime_info !== null ? cached_runtime_info["running_partition_label"] : "ota_x") + " &middot; Valentin Danev &middot; Valentin@danevi.info &middot; +359 882 619 117" + "<span class=\"credit\">Built on <a href=\"https://github.com/DroneBridge/ESP32\" target=\"_blank\" rel=\"noopener\">DroneBridge for ESP32</a> (Apache-2.0) by Wolfgang Christl</span>";
+}
+
+function update_fc_status_chips(json_data) {
+	let armed_chip = document.getElementById("fc_armed_status");
+	let mode_chip = document.getElementById("fc_mode_status");
+	if (armed_chip == null || mode_chip == null) {
+		return;
+	}
+
+	let fc_seen = parseInt(json_data["fc_seen"]) === 1;
+	let fc_stale = parseInt(json_data["fc_stale"]) === 1;
+	if (!fc_seen) {
+		armed_chip.innerHTML = "no FC";
+		mode_chip.innerHTML = "no heartbeat";
+		return;
+	}
+
+	if (fc_stale) {
+		armed_chip.innerHTML = "stale";
+		mode_chip.innerHTML = "stale";
+		return;
+	}
+
+	let fc_armed = parseInt(json_data["fc_armed"]) === 1;
+	let fc_mode = json_data["fc_mode"] || "unknown";
+	let custom_mode = parseInt(json_data["fc_custom_mode"]);
+	armed_chip.innerHTML = fc_armed ? "YES" : "no";
+	mode_chip.innerHTML = fc_mode === "unknown" && !isNaN(custom_mode)
+		? "unknown " + custom_mode
+		: fc_mode;
 }
 
 function render_sonar_log_status() {
@@ -424,7 +489,7 @@ function get_runtime_firmware_info() {
 		cached_runtime_info = json_data;
 		render_about_text();
 	}).catch(error => {
-		conn_status = 0
+		// get_json() already counted this failure - do not count it twice
 		error.message;
 		return -1;
 	});
@@ -445,17 +510,55 @@ function get_system_info() {
 			document.getElementById("ant_use_ext_div").style.display = "none";
 		}
 	}).catch(error => {
-		conn_status = 0
+		// get_json() already counted this failure - do not count it twice
 		error.message;
 		return -1;
 	});
 	return 0;
 }
 
+function format_esp_uptime(uptime_ms) {
+	if (!Number.isFinite(uptime_ms) || uptime_ms < 0) {
+		return "";
+	}
+	const total_seconds = Math.floor(uptime_ms / 1000);
+	const days = Math.floor(total_seconds / 86400);
+	const hours = Math.floor((total_seconds % 86400) / 3600);
+	const minutes = Math.floor((total_seconds % 3600) / 60);
+	const seconds = total_seconds % 60;
+	const clock = [hours, minutes, seconds]
+		.map(value => value.toString().padStart(2, "0"))
+		.join(":");
+	return days > 0 ? days + "d " + clock : clock;
+}
+
+/**
+ * A request reached the Companion. Clears the failure streak.
+ */
+function note_conn_ok() {
+	conn_fail_count = 0;
+	conn_status = 1;
+}
+
+/**
+ * A request failed to reach the Companion (timeout, abort or network error).
+ * Only reports the link as down once the failures are consecutive, so a single
+ * dropped packet no longer paints the whole UI red.
+ */
+function note_conn_fail() {
+	conn_fail_count++;
+	if (conn_fail_count >= CONN_FAIL_THRESHOLD) {
+		conn_status = 0;
+	}
+}
+
 function update_conn_status() {
-	if (conn_status)
-		document.getElementById("web_conn_status").innerHTML = "<span class=\"dot_green\"></span> connected to Companion"
-	else {
+	if (conn_status) {
+		const uptime = format_esp_uptime(esp_uptime_ms);
+		document.getElementById("web_conn_status").innerHTML =
+			"<span class=\"dot_green\"></span> connected to Companion" +
+			(uptime ? " &middot; uptime " + uptime : "")
+	} else {
 		document.getElementById("web_conn_status").innerHTML = "<span class=\"dot_red\"></span> disconnected from Companion"
 		document.getElementById("current_client_ip").innerHTML = ""
 	}
@@ -482,26 +585,50 @@ function update_conn_status() {
 /**
  * Get connection status information and display it in the GUI
  */
+function format_serial_counter(total_bytes, bytes_per_second) {
+	if (isNaN(total_bytes)) return "&mdash;";
+	if (total_bytes > 1000000) {
+		return (total_bytes / 1000000).toFixed(3) + " MB<br>" +
+			((bytes_per_second * 8) / 1000).toFixed(2) + " kbit/s";
+	}
+	if (total_bytes > 1000) {
+		return (total_bytes / 1000).toFixed(2) + " kB<br>" +
+			((bytes_per_second * 8) / 1000).toFixed(2) + " kbit/s";
+	}
+	return total_bytes + " bytes<br>" + Math.round(bytes_per_second) + " byte/s";
+}
+
 function get_stats() {
+	// Called every 500 ms. With a 2500 ms timeout an unanswered request would
+	// otherwise stack up behind itself and add load to an already lossy link.
+	if (s_stats_in_flight) {
+		return 0;
+	}
+	s_stats_in_flight = true;
 	get_json("api/system/stats").then(json_data => {
-		conn_status = 1
+		note_conn_ok();
+		esp_uptime_ms = Number(json_data["esp_uptime_ms"]);
+		update_conn_status();
 		let d = new Date();
 		recv_ser_bytes = parseInt(json_data["read_bytes"]);
+		sent_ser_bytes = parseInt(json_data["sent_bytes"]);
 		serial_dec_mav_msgs = parseInt(json_data["serial_dec_mav_msgs"]);
 		let bytes_per_second = 0;
+		let sent_bytes_per_second = 0;
 		let current_time = d.getTime();
 		if (last_byte_count > 0 && last_timestamp_byte_count > 0 && !isNaN(recv_ser_bytes)) {
 			bytes_per_second = (recv_ser_bytes - last_byte_count) / ((current_time - last_timestamp_byte_count) / 1000);
 		}
-		last_timestamp_byte_count = current_time;
-		if (!isNaN(recv_ser_bytes) && recv_ser_bytes > 1000000) {
-			document.getElementById("read_bytes").innerHTML = (recv_ser_bytes / 1000000).toFixed(3) + " MB (" + ((bytes_per_second * 8) / 1000).toFixed(2) + " kbit/s)"
-		} else if (!isNaN(recv_ser_bytes) && recv_ser_bytes > 1000) {
-			document.getElementById("read_bytes").innerHTML = (recv_ser_bytes / 1000).toFixed(2) + " kB (" + ((bytes_per_second * 8) / 1000).toFixed(2) + " kbit/s)"
-		} else if (!isNaN(recv_ser_bytes)) {
-			document.getElementById("read_bytes").innerHTML = recv_ser_bytes + " bytes (" + Math.round(bytes_per_second) + " byte/s)"
+		if (last_sent_byte_count > 0 && last_timestamp_byte_count > 0 && !isNaN(sent_ser_bytes)) {
+			sent_bytes_per_second = (sent_ser_bytes - last_sent_byte_count) / ((current_time - last_timestamp_byte_count) / 1000);
 		}
+		last_timestamp_byte_count = current_time;
+		document.getElementById("read_bytes").innerHTML =
+			format_serial_counter(recv_ser_bytes, bytes_per_second);
 		last_byte_count = recv_ser_bytes;
+		document.getElementById("sent_bytes").innerHTML =
+			format_serial_counter(sent_ser_bytes, sent_bytes_per_second);
+		last_sent_byte_count = sent_ser_bytes;
 
 		let tcp_clients = parseInt(json_data["tcp_connected"])
 		if (!isNaN(tcp_clients) && tcp_clients === 1) {
@@ -557,13 +684,17 @@ function get_stats() {
 		if ('active_sonar_source' in json_data) {
 			active_sonar_source = parseInt(json_data["active_sonar_source"]);
 		}
+		update_fc_status_chips(json_data);
 		change_hardwired_visibility();
 		update_hardwired_readouts(json_data);
 		update_deeper_readouts(json_data);
+		update_deeper_pipeline_diagnostics(json_data);
 
 	}).catch(error => {
-		conn_status = 0
+		// get_json() already counted this failure - do not count it twice
 		error.message;
+	}).finally(() => {
+		s_stats_in_flight = false;
 	});
 }
 
@@ -677,6 +808,35 @@ function update_deeper_readouts(json_data) {
 	}
 }
 
+function update_deeper_pipeline_diagnostics(json_data) {
+	let elem = document.getElementById("ss_deeper_pipeline");
+	if (elem == null) return;
+	let n = (key) => { let value = parseInt(json_data[key]); return isNaN(value) ? 0 : value; };
+	let requestCount = n("deeper_request_count");
+	let depthCount = n("deeper_depth_count");
+	let inputLast = n("deeper_last_depth_interval_ms");
+	let inputMax = n("deeper_max_depth_interval_ms");
+	let publishCount = n("deeper_fc_publish_count");
+	let freshPublishCount = n("deeper_fresh_publish_count");
+	let skipCount = n("deeper_no_data_skip_count");
+	let returnCount = n("deeper_return_count");
+	let returnLast = n("deeper_return_last_interval_ms");
+	let returnMax = n("deeper_return_max_interval_ms");
+	let returnAge = parseInt(json_data["deeper_return_age_ms"]);
+	let returnDepth = parseInt(json_data["deeper_return_depth_mm"]);
+	let returnSource = n("deeper_return_sysid") + "." + n("deeper_return_compid");
+
+	let input = "Deeper → ESP: " + depthCount + " depth / " + requestCount + " requests" +
+		(depthCount > 1 ? ", interval " + inputLast + " ms (max " + inputMax + " ms)" : "");
+	let output = "ESP → FC: " + publishCount + " published, " + freshPublishCount + " fresh" +
+		(skipCount ? ", " + skipCount + " no-data skips" : "");
+	let returned = returnCount === 0 ? "FC → ESP: no DISTANCE_SENSOR returned yet" :
+		"FC → ESP: " + returnCount + " returned, interval " + returnLast + " ms (max " + returnMax +
+		" ms), " + (returnDepth / 1000).toFixed(2) + " m from " + returnSource +
+		(!isNaN(returnAge) && returnAge >= 0 ? " (" + returnAge + " ms ago)" : "");
+	elem.textContent = input + " | " + output + " | " + returned;
+}
+
 /**
  * Get settings from ESP and display them in the GUI. JSON objects have to match the element ids
  *  returns 0 on success and -1 on failure
@@ -684,7 +844,7 @@ function update_deeper_readouts(json_data) {
 function get_settings() {
 	get_json("api/settings").then(json_data => {
 		console.log("Received settings: " + json_data)
-		conn_status = 1
+		note_conn_ok();
 		for (const key in json_data) {
 			if (json_data.hasOwnProperty(key)) {
 				let elem = document.getElementById(key)
@@ -701,7 +861,7 @@ function get_settings() {
 		set_telem_proto = document.getElementById("proto").value;
 		change_hardwired_visibility();
 	}).catch(error => {
-		conn_status = 0;
+		// get_json() already counted this failure - do not count it twice
 		const normalized_error = normalize_request_error(error);
 		if (normalized_error.isSilentBackgroundError !== true) {
 			show_toast(normalized_error.message);
@@ -738,7 +898,7 @@ function add_new_udp_client() {
 		};
 		send_json("api/settings/clients/udp", JSON.stringify(myjson)).then(send_response => {
 			console.log(send_response);
-			conn_status = 1
+			note_conn_ok();
 			show_toast(send_response["msg"])
 		}).catch(error => {
 			show_toast(error.message);
@@ -761,7 +921,7 @@ async function clear_udp_clients() {
 			body: null
 		});
 		if (!response.ok) {
-			conn_status = 0
+			note_conn_ok(); // the board answered - the link is up
 			const message = `An error has occured: ${response.status}`;
 			throw new Error(message);
 		}
@@ -822,7 +982,7 @@ function save_settings() {
 		let json_data = toJSONString(form)
 		send_json("api/settings", json_data).then(send_response => {
 			console.log(send_response);
-			conn_status = 1
+			note_conn_ok();
 			show_toast(send_response["msg"])
 			get_settings()  // update UI with new settings
 		}).catch(error => {

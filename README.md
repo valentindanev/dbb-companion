@@ -1,6 +1,6 @@
 # DBB Companion
 
-**DBB Companion** is the open-source onboard-computer firmware for the **Danevi Bait Boats** platform — an ESP32 companion computer that bridges dual sonar and a MAVLink flight controller (ArduPilot / ArduRover) over Wi-Fi, with a built-in web dashboard and dual-slot OTA updates.
+**DBB Companion** is the open-source onboard-computer firmware for the **Danevi Bait Boats** platform — an ESP32-S3 companion computer that bridges dual sonar and a MAVLink flight controller (ArduPilot / ArduRover) over Wi-Fi, with a built-in web dashboard and dual-slot OTA updates.
 
 > ⚠️ **Early / work-in-progress.** This is the open *base*. It already works as a sonar + MAVLink Wi-Fi bridge, but hardening (RAM/task cleanup) is ongoing — expect changes.
 
@@ -18,21 +18,34 @@ DBB Companion moves that link **onto the boat**. The ESP32 sits right next to th
 - **Dual sonar → MAVLink `DISTANCE_SENSOR`** — a hardwired UART sonar *and* a Deeper CHIRP+ Wi-Fi sonar (boot-time source selection), published to the flight controller.
 - **MAVLink 2 Wi-Fi bridge** to an ArduPilot / ArduRover flight controller (plus a transparent passthrough mode).
 - **Web dashboard** (AP or STA) — settings, live stats, sonar debug, logs.
-- **Dual-slot A/B OTA** for the app and the web UI, with a baked-in recovery portal.
+- **Dual-slot A/B OTA** with a baked-in recovery portal, plus a `factory` fallback image the bootloader reverts to if both slots fail. On the S3 target the web UI is embedded in the app, so firmware and UI update atomically.
 - **Persistent sonar log** with HTTP download.
+- **Flight-controller firmware updates over USB OTG** — upload an ArduPilot `.apj` through the web
+  UI and the companion reflashes the FC itself, no PC and no opening the hull. Measured
+  111 KB/s.
 
 ## Hardware
-- ESP32 (classic) or ESP32-S3. Reference target: **ESP32-S3-WROOM-1 (N16R8)**.
+- **ESP32-S3-WROOM-1 (N16R8)**.
 - A flight controller running **ArduPilot / ArduRover** with MAVLink 2 on a spare UART.
+- Optional: a USB-C to USB-C cable from the S3's native USB port to the flight controller, for
+  firmware updates. Nothing else. Both boards must be independently powered; do not bridge the
+  companion board's USB-OTG VBUS pads and do not put a USB hub in this link.
 - Optional: a hardwired UART sonar and/or a Deeper CHIRP+.
 
 ## Build (ESP-IDF v5.4.x)
 ```sh
-idf.py set-target esp32        # or esp32s3
+idf.py set-target esp32s3
 idf.py build
 idf.py -p <PORT> flash monitor
 ```
-The small web UI under `frontend/` is built automatically (via npm) during the CMake build.
+The small web UI under `frontend/` is built automatically during the CMake build by
+`tools/build_frontend.py`, using the Python that ESP-IDF pins. There is no npm
+dependency.
+
+`sdkconfig.defaults.esp32s3` selects the 16 MiB N16R8 layout in
+`partitions_s3_16mb.csv`, octal PSRAM, embedded web assets and FAT logs. That
+layout reserves a `factory` partition for a known-good image, which the
+bootloader falls back to if both OTA slots become unbootable.
 
 ## Architecture: open base + optional brain
 This repository is the **open base**. It exposes a small hook interface (`main/dbb_brain.h`) backed by **weak no-op stubs** (`main/dbb_brain_stub.c`). Out of the box those hooks do nothing, so you get a plain, fully-working sonar + MAVLink bridge.

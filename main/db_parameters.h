@@ -216,6 +216,8 @@ int db_param_print_values_to_buffer(uint8_t *str_buffer, size_t str_buffer_size)
 void db_param_read_all_params_nvs(const nvs_handle_t *nvs_handle);
 void db_param_write_all_params_nvs(const nvs_handle_t *nvs_handle);
 void db_param_read_all_params_json(const cJSON *root_obj);
+int db_param_validate_json(const cJSON *root_obj, char *err_buf,
+                           size_t err_buf_size);
 void db_param_write_all_params_json(cJSON *root_obj);
 
 bool db_param_is_valid_str(char *new_string_value,

@@ -18,7 +18,6 @@
  */
 
 #include <driver/gpio.h>
-#include <esp_ota_ops.h>
 #include <esp_wifi_types.h>
 #include <lwip/apps/netbiosns.h>
 #include <nvs_flash.h>
@@ -31,7 +30,9 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#if CONFIG_WEB_DEPLOY_SF
 #include "esp_spiffs.h"
+#endif
 #include "esp_vfs_semihost.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
@@ -47,6 +48,11 @@
 #include "deeper_udp_sonar.h"
 #include "danevi_sonar.h"
 #include "db_parameters.h"
+#include "db_diag.h"
+#include "db_fc_flash.h"
+#include "db_location_store.h"
+#include "db_mavlink_msgs.h"
+#include "db_ota_policy.h"
 #include "db_serial.h"
 #include "db_sonar_log.h"
 #include "globals.h"
@@ -265,26 +271,92 @@ esp_err_t db_unmount_web_fs(void) {
   }
 #endif
 
+#if CONFIG_WEB_DEPLOY_EMBEDDED
+  ESP_LOGW(TAG, "Embedded web assets cannot be unmounted independently");
+  return ESP_ERR_NOT_SUPPORTED;
+#endif
+
   s_web_fs_available = false;
   return ESP_OK;
 }
 
-static void db_mark_running_ota_image_valid_if_needed(void) {
-  const esp_partition_t *running = esp_ota_get_running_partition();
-  esp_ota_img_states_t ota_state;
-  esp_err_t err = esp_ota_get_state_partition(running, &ota_state);
+/* Only referenced from db_start_ota_health_gate()'s gate-enabled branch. */
+#ifdef CONFIG_DB_OTA_HEALTH_GATE
+static void db_ota_runtime_health_observer_task(void *argument) {
+  (void)argument;
 
-  if (err == ESP_OK && ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
-    err = esp_ota_mark_app_valid_cancel_rollback();
-    if (err == ESP_OK) {
-      ESP_LOGI(TAG, "Confirmed pending OTA image as valid.");
-    } else {
-      ESP_LOGE(TAG, "Failed to confirm pending OTA image (%s)",
-               esp_err_to_name(err));
+  while (true) {
+    db_ota_health_status_t status;
+    db_ota_health_get_status(&status);
+    if (status.state != DB_OTA_HEALTH_WAITING) {
+      vTaskDelete(NULL);
+      return;
     }
-  } else if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED) {
-    ESP_LOGW(TAG, "Unable to query OTA image state (%s)", esp_err_to_name(err));
+
+    if ((status.required_mask & DB_OTA_HEALTH_FC) != 0U) {
+      db_mavlink_fc_state_t fc_state;
+      db_mavlink_get_fc_state(&fc_state);
+      if (fc_state.seen && !fc_state.stale) {
+        db_ota_health_mark_pass(DB_OTA_HEALTH_FC);
+      }
+    }
+
+    if ((status.required_mask & DB_OTA_HEALTH_SONAR) != 0U) {
+      int distance_mm = 0;
+      bool sonar_ready = false;
+      if (DB_ACTIVE_SONAR_SOURCE == DB_SONAR_SOURCE_HARDWIRED) {
+        sonar_ready = danevi_sonar_get_latest_distance(&distance_mm);
+      } else if (DB_ACTIVE_SONAR_SOURCE == DB_SONAR_SOURCE_DEEPER) {
+        sonar_ready = deeper_udp_sonar_get_latest_distance(&distance_mm);
+      }
+      if (sonar_ready) {
+        db_ota_health_mark_pass(DB_OTA_HEALTH_SONAR);
+      }
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(500));
   }
+}
+#endif /* CONFIG_DB_OTA_HEALTH_GATE */
+
+static void db_start_ota_health_gate(uint32_t required_mask,
+                                     uint32_t passed_mask,
+                                     uint32_t failed_mask) {
+#ifdef CONFIG_DB_OTA_HEALTH_GATE
+  esp_err_t err = db_ota_health_gate_start(required_mask, passed_mask);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Unable to start OTA health gate (%s)", esp_err_to_name(err));
+    return;
+  }
+
+  db_ota_health_mark_fail(failed_mask);
+  db_ota_health_status_t status;
+  db_ota_health_get_status(&status);
+  uint32_t runtime_mask = required_mask &
+                          (DB_OTA_HEALTH_FC | DB_OTA_HEALTH_SONAR);
+  if (status.state == DB_OTA_HEALTH_WAITING && runtime_mask != 0U) {
+    if (xTaskCreate(db_ota_runtime_health_observer_task, "db_ota_observer",
+                    3072, NULL, 4, NULL) != pdPASS) {
+      ESP_LOGE(TAG, "Unable to start OTA runtime health observer");
+      db_ota_health_mark_fail(runtime_mask);
+    }
+  }
+#else
+  (void)required_mask;
+  (void)passed_mask;
+  (void)failed_mask;
+  if (db_ota_running_is_pending_verify()) {
+    /*
+     * No gate is compiled in, so nothing here judges the image. It is NOT left
+     * unconfirmed: db_ota_crash_guard_mark_healthy(), called immediately after
+     * this function, confirms it. That matters because rollback is enabled -
+     * an image nothing confirms is discarded on the next boot.
+     */
+    ESP_LOGI(TAG,
+             "Health gate not compiled in; image will be confirmed on a "
+             "successful boot");
+  }
+#endif
 }
 
 static void db_unregister_wifi_handlers(void) {
@@ -514,6 +586,14 @@ esp_err_t init_fs(void) {
              esp_err_to_name(ret));
     return ESP_FAIL;
   }
+  return ESP_OK;
+}
+#endif
+
+#if CONFIG_WEB_DEPLOY_EMBEDDED
+esp_err_t init_fs(void) {
+  s_web_fs_available = true;
+  ESP_LOGI(TAG, "Web assets are embedded in the application image");
   return ESP_OK;
 }
 #endif
@@ -890,13 +970,11 @@ void save_udp_client_to_nvm(struct db_udp_client_t *new_db_udp_client,
  */
 void db_read_settings_nvs() {
   nvs_handle my_handle;
-  if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &my_handle) != ESP_OK) {
+  esp_err_t open_err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &my_handle);
+  if (open_err == ESP_ERR_NVS_NOT_FOUND) {
     ESP_LOGI(
         TAG,
         "NVS namespace not found. Using default values, setting up NVS...");
-    ESP_ERROR_CHECK(nvs_flash_erase());
-    ESP_ERROR_CHECK(nvs_flash_init());
-
     // Set all parameters to their default values when flash is empty
     db_param_reset_all();
 
@@ -905,7 +983,7 @@ void db_read_settings_nvs() {
 
     // Print parameters to console for logging
     db_log_param_values("Initialized with default values:\n");
-  } else {
+  } else if (open_err == ESP_OK) {
     ESP_LOGI(TAG, "Reading settings from NVS");
     db_param_read_all_params_nvs(&my_handle);
     nvs_close(my_handle);
@@ -939,6 +1017,9 @@ void db_read_settings_nvs() {
       // no saved UDP client - do nothing
       ESP_LOGI(TAG, "No saved UDP client - skipping");
     }
+  } else {
+    ESP_LOGE(TAG, "Unable to open settings in encrypted NVS (%s)",
+             esp_err_to_name(open_err));
   }
 }
 
@@ -1048,10 +1129,19 @@ void db_configure_antenna() {
  * Main entry point.
  */
 void app_main() {
+  db_ota_crash_guard_start();
   bool deeper_sta_connected = false;
   bool hardwired_sonar_selected = false;
   bool force_update_ap_mode = false;
   int boot_radio_mode = DB_WIFI_MODE_AP;
+  uint32_t ota_health_required =
+      DB_OTA_HEALTH_NVS | DB_OTA_HEALTH_WEB | DB_OTA_HEALTH_RADIO |
+      DB_OTA_HEALTH_CONTROL | DB_OTA_HEALTH_REST;
+  uint32_t ota_health_passed = 0U;
+  uint32_t ota_health_failed = 0U;
+#ifdef CONFIG_DB_SERIAL_OPTION_UART
+  ota_health_required |= DB_OTA_HEALTH_FC;
+#endif
   s_deeper_sta_session_active = false;
 
   db_param_init_parameters();
@@ -1059,12 +1149,38 @@ void app_main() {
       udp_client_list_create(); // http server functions and
                                 // db_read_settings_nvs expect the list to exist
   esp_err_t ret = nvs_flash_init();
-  if (ret == ESP_ERR_NVS_NO_FREE_PAGES) {
+  if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
+      ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
     ESP_ERROR_CHECK(nvs_flash_erase());
     ret = nvs_flash_init();
   }
   ESP_ERROR_CHECK(ret);
+  ota_health_passed |= DB_OTA_HEALTH_NVS;
   db_read_settings_nvs();
+#if CONFIG_DB_DIAG_JOURNAL
+  ota_health_required |= DB_OTA_HEALTH_DIAGNOSTICS;
+  if (db_diag_log_boot() == ESP_OK) {
+    ota_health_passed |= DB_OTA_HEALTH_DIAGNOSTICS;
+  } else {
+    ota_health_failed |= DB_OTA_HEALTH_DIAGNOSTICS;
+    ESP_LOGW(TAG, "Persistent diagnostic journal is unavailable");
+  }
+#endif
+#if CONFIG_DB_LOCATION_STORE
+  ota_health_required |= DB_OTA_HEALTH_LOCATION_DB;
+  if (db_location_store_init() == ESP_OK) {
+    db_location_status_t location_status;
+    db_location_store_get_status(&location_status);
+    if (location_status.available && !location_status.recovery_fault) {
+      ota_health_passed |= DB_OTA_HEALTH_LOCATION_DB;
+    } else {
+      ota_health_failed |= DB_OTA_HEALTH_LOCATION_DB;
+    }
+  } else {
+    ota_health_failed |= DB_OTA_HEALTH_LOCATION_DB;
+    ESP_LOGW(TAG, "Persistent A/B location database is unavailable");
+  }
+#endif
   force_update_ap_mode = db_consume_update_ap_mode_on_next_boot();
   DB_RADIO_MODE_DESIGNATED =
       DB_PARAM_RADIO_MODE; // must always match, mismatch only allowed when
@@ -1163,9 +1279,13 @@ void app_main() {
   }
   }
 
+  ota_health_passed |= DB_OTA_HEALTH_RADIO;
+
   if (hardwired_sonar_selected) {
+    ota_health_required |= DB_OTA_HEALTH_SONAR;
     danevi_sonar_init(DB_PARAM_SONAR_TX_GPIO, DB_PARAM_SONAR_RX_GPIO);
   } else if (DB_ACTIVE_SONAR_SOURCE == DB_SONAR_SOURCE_DEEPER) {
+    ota_health_required |= DB_OTA_HEALTH_SONAR;
     ESP_LOGI(TAG, "Deeper selected at boot. Hardwired sonar stays off.");
   } else {
     ESP_LOGI(TAG, "No hardwired sonar source selected for this boot.");
@@ -1177,17 +1297,29 @@ void app_main() {
     netbiosns_init();
     netbiosns_set_name("dronebridge");
   }
-  if (init_fs() != ESP_OK) {
+  if (init_fs() == ESP_OK) {
+    ota_health_passed |= DB_OTA_HEALTH_WEB;
+  } else {
     ESP_LOGW(TAG, "Web filesystem is unavailable. Continuing with the embedded "
-                  "OTA recovery page only.");
+                  "OTA recovery page so a pinned bundle can be staged.");
   }
   // Temporary stability hotfix:
   // keep the persistent log path disabled while the ESP is booted into the
   // Deeper STA session, so we can separate Deeper-mode regressions from the
   // newer flash-backed logging feature.
   bool enable_persistent_sonar_log = !deeper_sta_connected;
+#if CONFIG_DB_LOG_STORAGE_FATFS
+  ota_health_required |= DB_OTA_HEALTH_LOGS;
+#endif
   if (enable_persistent_sonar_log) {
-    if (db_sonar_log_init() != ESP_OK) {
+    if (db_sonar_log_init() == ESP_OK) {
+#if CONFIG_DB_LOG_STORAGE_FATFS
+      ota_health_passed |= DB_OTA_HEALTH_LOGS;
+#endif
+    } else {
+#if CONFIG_DB_LOG_STORAGE_FATFS
+      ota_health_failed |= DB_OTA_HEALTH_LOGS;
+#endif
       ESP_LOGW(TAG, "Persistent sonar log filesystem is unavailable. "
                     "Continuing without downloadable rolling logs.");
     }
@@ -1195,10 +1327,28 @@ void app_main() {
                           deeper_sta_connected, force_update_ap_mode,
                           db_is_web_fs_available());
   } else {
+#if CONFIG_DB_LOG_STORAGE_FATFS
+    ota_health_failed |= DB_OTA_HEALTH_LOGS;
+#endif
     ESP_LOGW(TAG, "Persistent sonar log temporarily disabled for this Deeper "
                   "STA boot while the stability hotfix is active.");
   }
+  /*
+   * Flight-controller flashing over USB OTG. Started unconditionally and after
+   * the sonar log, because it stores its image in the same /logs FAT mount -
+   * but it does NOT depend on that mount succeeding. If /logs is unavailable
+   * the USB host still comes up and the service simply reports no stored
+   * firmware, rather than taking the boot down with it.
+   *
+   * Independent of the FC UART on TX12/RX14: this owns only the OTG pins.
+   */
+  if (db_fc_flash_init() != ESP_OK) {
+    ESP_LOGW(TAG, "FC flash service unavailable; USB host did not start. "
+                  "Everything else is unaffected.");
+  }
+
   db_start_control_module();
+  ota_health_passed |= DB_OTA_HEALTH_CONTROL;
   if (deeper_sta_connected) {
     deeper_udp_sonar_start();
   }
@@ -1213,11 +1363,23 @@ void app_main() {
 
   {
     // The web dashboard is served in every remaining Wi-Fi mode (AP/STA).
-    ESP_ERROR_CHECK(start_rest_server(CONFIG_WEB_MOUNT_POINT));
-    ESP_LOGI(TAG, "Rest Server started");
+    esp_err_t rest_err = start_rest_server(CONFIG_WEB_MOUNT_POINT);
+    if (rest_err == ESP_OK) {
+      ota_health_passed |= DB_OTA_HEALTH_REST;
+      ESP_LOGI(TAG, "Rest Server started");
+    } else {
+      ota_health_failed |= DB_OTA_HEALTH_REST;
+      ESP_LOGE(TAG, "Rest Server failed to start (%s)",
+               esp_err_to_name(rest_err));
+#ifndef CONFIG_DB_OTA_HEALTH_GATE
+      ESP_ERROR_CHECK(rest_err);
+#endif
+    }
     // Disable legacy support for DroneBridge communication module - no use case
     // for DroneBridge for ESP32 communication_module();
   }
-  db_mark_running_ota_image_valid_if_needed();
+  db_start_ota_health_gate(ota_health_required, ota_health_passed,
+                           ota_health_failed);
+  db_ota_crash_guard_mark_healthy();
   ESP_LOGI(TAG, "app_main finished initial setup");
 }

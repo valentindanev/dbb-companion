@@ -100,7 +100,7 @@ a{color:inherit}
 .img_button{cursor:pointer;opacity:.7;filter:brightness(0) invert(.8)}
 .img_button:hover{opacity:1}
 
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:13px;margin-bottom:16px}
+.stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:13px;margin-bottom:16px}
 .stat{display:flex;gap:13px;align-items:center;padding:16px 17px;border-radius:var(--radius);
   background:var(--card);border:1px solid var(--line);position:relative;overflow:hidden}
 .stat:after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent);opacity:.55}
@@ -215,8 +215,9 @@ footer{padding:16px 4px 4px;color:var(--faint);font-size:11.5px}
   <symbol id="i-sonar" viewBox="0 0 24 24"><circle cx="6" cy="18" r="1.4" fill="currentColor" stroke="none"/><path d="M6 13a5 5 0 0 1 5 5"/><path d="M6 8a10 10 0 0 1 10 10"/><path d="M6 3a15 15 0 0 1 15 15"/></symbol>
   <symbol id="i-logs" viewBox="0 0 24 24"><path d="M5 5h14M5 10h14M5 15h9M5 20h9"/></symbol>
   <symbol id="i-update" viewBox="0 0 24 24"><path d="M12 16V4M8 8l4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></symbol>
-  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.6M20 5v5h-5"/></symbol>
-  <symbol id="i-rx" viewBox="0 0 24 24"><path d="M12 4v13M6 11l6 6 6-6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.6M20 5v5h-5"/></symbol>
+    <symbol id="i-rx" viewBox="0 0 24 24"><path d="M12 4v13M6 11l6 6 6-6"/></symbol>
+    <symbol id="i-tx" viewBox="0 0 24 24"><path d="M12 20V7M6 13l6-6 6 6"/></symbol>
   <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a4 4 0 0 0 5.7 0l2.3-2.3a4 4 0 0 0-5.7-5.7L11 6"/><path d="M14 11a4 4 0 0 0-5.7 0L6 13.3a4 4 0 0 0 5.7 5.7L13 18"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></symbol>
   <symbol id="i-depth" viewBox="0 0 24 24"><path d="M3 6c2.2 2 4.3 2 6.5 0s4.3-2 6.5 0 4.3 2 6.5 0"/><path d="M3 12c2.2 2 4.3 2 6.5 0s4.3-2 6.5 0 4.3 2 6.5 0"/><path d="M3 18c2.2 2 4.3 2 6.5 0s4.3-2 6.5 0 4.3 2 6.5 0"/></symbol>
@@ -237,7 +238,7 @@ footer{padding:16px 4px 4px;color:var(--faint);font-size:11.5px}
     <div class="dev-card">
       <span class="eyebrow">Connected device</span>
       <strong>DBB Companion</strong>
-      <small>192.168.42.1 &middot; v0.1</small>
+      <small>192.168.42.1 &middot; v0.2</small>
       <div id="current_client_ip"></div>
     </div>
     <nav class="nav">
@@ -247,6 +248,9 @@ footer{padding:16px 4px 4px;color:var(--faint);font-size:11.5px}
       <a href="#sonar"><svg class="icon"><use href="#i-sonar"/></svg><span>Sonar</span></a>
       <a href="#logs"><svg class="icon"><use href="#i-logs"/></svg><span>Logs</span></a>
       <a href="#update"><svg class="icon"><use href="#i-update"/></svg><span>Update</span></a>
+      <!-- Real page navigation, not an in-page anchor: /fcflash is served
+           standalone from http_server.c like /telemetry and /ota. -->
+      <a href="/fcflash"><svg class="icon"><use href="#i-update"/></svg><span>FC firmware</span></a>
     </nav>
     <div class="side-foot"><b>Danevi Bait Boats</b></div>
   </aside>
@@ -261,15 +265,18 @@ footer{padding:16px 4px 4px;color:var(--faint);font-size:11.5px}
             <span class="chip"><svg class="icon"><use href="#i-wifi"/></svg> AP <b>DaneviBaitBoats</b></span>
             <span class="chip"><svg class="icon"><use href="#i-serial"/></svg> Link <b>MAVLink 2</b></span>
             <span class="chip"><svg class="icon"><use href="#i-depth"/></svg> Dual sonar</span>
+            <span class="chip"><svg class="icon"><use href="#i-check"/></svg> Armed <b id="fc_armed_status">waiting</b></span>
+            <span class="chip"><svg class="icon"><use href="#i-overview"/></svg> Mode <b id="fc_mode_status">waiting</b></span>
           </div>
         </div>
         <button type="button" class="btn" onclick="get_system_info();get_settings();get_stats();get_sonar_log_status()"><svg class="icon"><use href="#i-refresh"/></svg> Refresh status</button>
       </div>
     </section>
 
-    <section class="stats">
-      <div class="stat"><div class="si"><svg class="icon"><use href="#i-rx"/></svg></div><div><div class="lbl">Serial received</div><div class="val" id="read_bytes">&mdash;</div></div></div>
-      <div class="stat teal"><div class="si"><svg class="icon"><use href="#i-link"/></svg></div><div><div class="lbl">TCP clients</div><div class="val" id="tcp_connected">&mdash;</div></div></div>
+      <section class="stats">
+        <div class="stat"><div class="si"><svg class="icon"><use href="#i-rx"/></svg></div><div><div class="lbl">Serial received</div><div class="val" id="read_bytes">&mdash;</div></div></div>
+        <div class="stat teal"><div class="si"><svg class="icon"><use href="#i-tx"/></svg></div><div><div class="lbl">Serial sent</div><div class="val" id="sent_bytes">&mdash;</div></div></div>
+        <div class="stat teal"><div class="si"><svg class="icon"><use href="#i-link"/></svg></div><div><div class="lbl">TCP clients</div><div class="val" id="tcp_connected">&mdash;</div></div></div>
       <div class="stat"><div class="si"><svg class="icon"><use href="#i-link"/></svg></div><div><div class="lbl">UDP clients</div><div class="val"><span id="udp_connected"><span class="tooltiptext" id="tooltip_udp_clients"></span>&mdash;</span>
         <img class="img_button" height="16" alt="add" src="add_16dp_icon.png" onclick="add_new_udp_client()"><img class="img_button" height="16" alt="del" src="remove_16dp_icon.png" onclick="clear_udp_clients()"></div></div></div>
       <div class="stat"><div class="si"><svg class="icon"><use href="#i-check"/></svg></div><div><div class="lbl">Device state</div><div class="val ok">Ready</div></div></div>
@@ -339,7 +346,7 @@ footer{padding:16px 4px 4px;color:var(--faint);font-size:11.5px}
         </div>
         <div class="sub">Protocol &amp; transport</div>
         <div class="row">
-          <div class="field"><label>Serial protocol</label><div class="static-field"><b>MAVLink 2</b></div><input type="hidden" id="proto" name="proto" value="4" form="settings_form"></div>
+          <div class="field"><label>Serial protocol</label><div class="static-field"><b>MAVLink 2</b></div><input type="hidden" id="proto" name="proto" value="4" data-number form="settings_form"></div>
           <div class="field" id="baud_div"><label for="baud">UART baud</label><select name="baud" id="baud" form="settings_form">
             <option value="5000000">5000000</option><option value="3000000">3000000</option><option value="2000000">2000000</option><option value="1500000">1500000</option><option value="1000000">1000000</option><option value="921600">921600</option><option value="576000">576000</option><option value="500800">500800</option><option value="460800">460800</option><option value="230400">230400</option><option value="115200">115200</option><option value="76800">76800</option><option value="57600">57600</option><option value="38400">38400</option><option value="19200">19200</option><option value="9600">9600</option><option value="4800">4800</option><option value="2400">2400</option><option value="1200">1200</option>
           </select></div>
@@ -364,8 +371,8 @@ footer{padding:16px 4px 4px;color:var(--faint);font-size:11.5px}
           <article class="subcard">
             <div class="subhead"><div><h3>Hardwired Sonar</h3><small>UART depth sensor</small></div><label class="sw"><input id="ss_hardwired_en" name="ss_hardwired_en" type="checkbox" onchange="change_hardwired_visibility()"><i></i></label></div>
             <div id="sonar_gpio_div"><div class="row">
-              <div class="field"><label for="ss_tx_pin">TX GPIO</label><input type="number" name="ss_tx_pin" id="ss_tx_pin" min="0" max="39"></div>
-              <div class="field"><label for="ss_rx_pin">RX GPIO</label><input type="number" name="ss_rx_pin" id="ss_rx_pin" min="0" max="39"></div>
+              <div class="field"><label for="ss_tx_pin">TX GPIO</label><input type="number" name="ss_tx_pin" id="ss_tx_pin" min="0" max="48"></div>
+              <div class="field"><label for="ss_rx_pin">RX GPIO</label><input type="number" name="ss_rx_pin" id="ss_rx_pin" min="0" max="48"></div>
             </div></div>
             <div id="ss_hardwired_summary_div">
               <div class="gauge"><div><small>Published depth</small><div class="big" id="ss_hardwired_depth">Waiting for UART frame</div></div><div class="wave"></div></div>
@@ -388,6 +395,7 @@ footer{padding:16px 4px 4px;color:var(--faint);font-size:11.5px}
               <div class="read"><small>Satellites / fix</small><div class="deeper-readout" id="ss_deeper_satellites">Waiting for $GNGGA</div></div>
               <div class="read"><small>GPS</small><div class="deeper-readout" id="ss_deeper_coordinates">Waiting for valid fix</div></div>
             </div></div>
+            <div class="read" style="margin-top:12px"><small>Pipeline diagnostics (this boot)</small><div class="deeper-readout" id="ss_deeper_pipeline">Waiting for Deeper pipeline data</div></div>
             <div id="ss_deeper_debug_div"><label class="console-lbl" for="ss_deeper_debug"><span style="font-size:11.5px;font-weight:700;color:var(--muted)">Recent Deeper packets</span></label><textarea id="ss_deeper_debug" class="debug-window" readonly spellcheck="false">Waiting for Deeper traffic...</textarea></div>
           </article>
         </div>
@@ -423,7 +431,7 @@ footer{padding:16px 4px 4px;color:var(--faint);font-size:11.5px}
     </section>
 
     <footer>
-      <div id="about">&reg;Danevi Bait Boats v0.1 ota_x &middot; Valentin Danev &middot; Valentin@danevi.info &middot; +359 882 619 117<span class="credit">Built on <a href="https://github.com/DroneBridge/ESP32" target="_blank" rel="noopener">DroneBridge for ESP32</a> (Apache-2.0) by Wolfgang Christl</span></div>
+      <div id="about">&reg;Danevi Bait Boats v0.2 ota_x &middot; Valentin Danev &middot; Valentin@danevi.info &middot; +359 882 619 117<span class="credit">Built on <a href="https://github.com/DroneBridge/ESP32" target="_blank" rel="noopener">DroneBridge for ESP32</a> (Apache-2.0) by Wolfgang Christl</span></div>
     </footer>
   </main>
 </div>

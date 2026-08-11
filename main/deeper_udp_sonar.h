@@ -18,8 +18,19 @@ typedef struct {
   uint32_t newest_sample_age_ms;
 } deeper_udp_snapshot_t;
 
+/* In-memory timing counters for locating a slow Deeper telemetry stage. */
+typedef struct {
+  uint32_t request_count;
+  uint32_t depth_count;
+  uint32_t last_depth_interval_ms;
+  uint32_t max_depth_interval_ms;
+  int last_depth_mm;
+  uint32_t last_depth_age_ms;
+} deeper_udp_diagnostics_t;
+
 void deeper_udp_sonar_start(void);
 bool deeper_udp_sonar_get_latest_distance(int *out_distance_mm);
 bool deeper_udp_sonar_get_snapshot(deeper_udp_snapshot_t *snapshot);
+bool deeper_udp_sonar_get_diagnostics(deeper_udp_diagnostics_t *diagnostics);
 
 #endif // DB_ESP32_DEEPER_UDP_SONAR_H

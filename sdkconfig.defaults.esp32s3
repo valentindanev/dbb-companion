@@ -1,0 +1,80 @@
+# ESP32-S3-WROOM-1 N16R8 build defaults.
+# Secure Boot, Flash Encryption and anti-rollback are OFF and are not planned.
+
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_s3_16mb.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x20000
+
+# ---------------------------------------------------------------------------
+# A/B rollback. This is the option whose absence silently disabled the entire
+# post-OTA health gate in the pre-rebuild tree: without it the bootloader never
+# promotes a new image to PENDING_VERIFY, so the gate's arming condition could
+# never be true and it returned NOT_REQUIRED on every boot.
+#
+# *** HARD DEPENDENCY ***
+# With this enabled the bootloader marks a freshly booted image PENDING_VERIFY,
+# and if the application does NOT confirm itself the next boot demotes it to
+# ABORTED and rolls back. The firmware must therefore implement confirmation
+# before this configuration is flashed, or EVERY OTA will roll back after one
+# reboot. It lands together with the rewritten db_ota_policy - never ahead of it.
+# ---------------------------------------------------------------------------
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MEMTEST=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+
+# Match the proven classic-ESP32 runtime allowance. The 2048-byte IDF default
+# overflows when the first SoftAP client is assigned and the timer callbacks run.
+CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=8192
+
+CONFIG_WEB_DEPLOY_EMBEDDED=y
+CONFIG_DB_LOG_STORAGE_FATFS=y
+CONFIG_DB_DIAG_JOURNAL=y
+CONFIG_DB_LOCATION_STORE=y
+# CONFIG_DB_LOCATION_BENCH_TEST is not set
+# CONFIG_DB_DIAG_BENCH_CRASH_TEST is not set
+
+# The post-OTA health gate stays OFF until the rewritten db_ota_policy lands and
+# has been exercised on the bench. Enabling it before then would gate updates on
+# checks that have never run.
+# CONFIG_DB_OTA_HEALTH_GATE is not set
+
+# ---------------------------------------------------------------------------
+# USB host, for reflashing the flight controller over USB OTG (db_fc_flash.c).
+#
+# External hub support is deliberately NOT enabled. Measured 10-08-2026: with the
+# FC behind a powered hub, IDF's hub driver cannot allocate the CDC notification
+# interrupt endpoint ("EXT_HUB: Interrupt EP allocation failure:
+# ESP_ERR_NOT_SUPPORTED") and the connection will not hold for two seconds. A
+# direct ESP-to-FC cable does not involve that code path at all and is rock
+# steady - 635 frames, zero errors, either cable orientation. The boat is wired
+# direct, so hubs buy nothing and cost a known failure mode.
+#
+# Note there is no VBUS setting to make: the FC is self-powered
+# (bmAttributes 0xc0) and the DAKEFPV hwdefs define no VBUS sense pin, so it
+# pulls D+ up unconditionally at boot. Do not bridge the devkit's OTG pads.
+# ---------------------------------------------------------------------------
+# CONFIG_USB_HOST_HUBS_SUPPORTED is not set
+
+# Keep the latest crash as an ELF coredump in the dedicated coredump partition.
+# A dedicated internal-RAM stack is required because this target permits task
+# stacks in PSRAM. Full DRAM capture stays off to limit image size.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+CONFIG_ESP_COREDUMP_CHECK_BOOT=y
+CONFIG_ESP_COREDUMP_MAX_TASKS_NUM=24
+CONFIG_ESP_COREDUMP_USE_STACK_SIZE=y
+CONFIG_ESP_COREDUMP_STACK_SIZE=2048
+# CONFIG_ESP_COREDUMP_CAPTURE_DRAM is not set
+# CONFIG_ESP_COREDUMP_FLASH_NO_OVERWRITE is not set

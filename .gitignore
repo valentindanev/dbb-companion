@@ -3,6 +3,9 @@
 /build_*/
 sdkconfig
 sdkconfig.old
+/sdkconfig_*
+**/sdkconfig.h
+/sdkconfig.defaults.esp32
 
 # ---- Managed components (restored from dependencies.lock via idf.py) ----
 /managed_components/
@@ -10,6 +13,13 @@ sdkconfig.old
 # ---- Frontend (npm) ----
 /frontend/node_modules/
 /frontend/build/
+/frontend/package.json
+/frontend/package-lock.json
+/frontend/info_16dp_icon.png
+
+# ---- Obsolete ESP-IDF make-system files (project builds with CMake) ----
+/Makefile
+/main/component.mk
 
 # ---- Private brain guard (defense in depth) ----
 # The proprietary brain lives OUTSIDE this repo (../dbb-brain-private) and is
@@ -26,3 +36,65 @@ sdkconfig.old
 Thumbs.db
 .vscode/
 .idea/
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+
+# ---- Public-repository publication gate ----
+# This repository is intentionally source-only.  The only public document under
+# docs/ is the dashboard image used by the root README.
+/docs/*
+!/docs/dashboard.jpg
+*.md
+!/README.md
+
+# Internal project/agent material must stay in the private AI-Lab project.
+**/PROJECT_STATE.md
+**/CODE_MAP.md
+**/AGENTS.md
+**/CLAUDE.md
+**/plans/
+**/notes/
+**/recipes/
+**/scratch/
+**/archive/
+**/_history/
+**/backup/
+**/backups/
+**/tests/
+**/.ai-lab/
+**/.codex/
+**/.context/
+
+# Private development-only firmware and synthetic test tooling.
+**/dbb-brain-private/
+**/dbb_brain_private.*
+**/private_brain/
+**/*synthetic_emitter*
+**/*synthetic-emitter*
+
+# Logs, firmware products, archives, temporary files, and secrets.
+*.log
+*.bin
+*.elf
+*.map
+*.hex
+*.uf2
+*.apj
+*.zip
+*.7z
+*.tar
+*.gz
+*.tmp
+*.temp
+*.orig
+*.rej
+*_BACKUP_*
+.env
+.env.*
+*.pem
+*.key
+secrets.*
+/dist/
+/out/

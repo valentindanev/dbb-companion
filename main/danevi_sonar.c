@@ -21,7 +21,7 @@
 #define DANEVI_DEBUG_MAX_LINES 8
 #define DANEVI_DEBUG_LINE_MAX 160
 #define DANEVI_FRAME_SIZE 4
-#define DANEVI_TRIGGER_BYTE 0xFF
+#define DANEVI_TRIGGER_BYTE 0x55
 #define DANEVI_RESPONSE_TIMEOUT_MS 30
 #define DANEVI_TRIGGER_INTERVAL_MS 100
 
@@ -187,14 +187,14 @@ static void danevi_log_no_response(void) {
     return;
   }
 
-  const char *line = "No hardwired sonar response within 100 ms";
+  const char *line = "No hardwired sonar response within 30 ms";
   ESP_LOGW(TAG, "%s", line);
   char debug_line[DANEVI_DEBUG_LINE_MAX];
   snprintf(debug_line, sizeof(debug_line), "[%lu ms] WARN %s",
            (unsigned long)danevi_now_ms(), line);
   danevi_store_debug_line(debug_line);
   db_sonar_log_log_hardwired_issue("no_response",
-                                   "timeout_ms=100 uart_read=0");
+                                   "timeout_ms=30 uart_read=0");
   g_last_no_response_log_tick = now;
 }
 
@@ -376,6 +376,7 @@ static void danevi_sonar_task(void *arg) {
   ESP_LOGI(TAG, "Starting Hardwired Sonar Task on Core 1");
 
   while (1) {
+    db_sonar_log_note_hardwired_poll();
     // Clear buffer before sending trigger
     uart_flush(SONAR_UART_NUM);
 
@@ -394,19 +395,23 @@ static void danevi_sonar_task(void *arg) {
 
       if (sum == chk) {
         int distance = (data_h << 8) + data_l;
+        db_sonar_log_note_hardwired_frame(distance);
         danevi_sonar_set_distance(distance);
         danevi_log_valid_distance(rx_buffer, length, distance);
       } else {
+        db_sonar_log_note_hardwired_bad_frame();
         danevi_log_frame_issue("checksum mismatch", rx_buffer, length);
       }
     } else if (length > 0) {
+      db_sonar_log_note_hardwired_bad_frame();
       danevi_log_frame_issue("misaligned frame", rx_buffer, length);
       uart_flush(SONAR_UART_NUM); // Flush misaligned data
     } else {
+      db_sonar_log_note_hardwired_timeout();
       danevi_log_no_response();
     }
 
-    // 100 ms is safely above the manufacturer minimum trigger interval.
+    // 100 ms is the manufacturer-recommended trigger interval.
     vTaskDelay(pdMS_TO_TICKS(DANEVI_TRIGGER_INTERVAL_MS));
   }
 }

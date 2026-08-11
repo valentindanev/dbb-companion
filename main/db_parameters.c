@@ -413,6 +413,11 @@ db_parameter_t db_param_hardwired_en = {.db_name = "ss_hardwired_en",
                                                       .max = 1,
                                                   }}};
 
+/**
+ * TX GPIO number of the hardwired sonar UART. Range must be derived from the
+ * SoC like the FC UART pins above - a hardcoded ceiling silently rejects legal
+ * pins on targets with a wider GPIO range (ESP32-S3 goes up to 48).
+ */
 db_parameter_t db_param_sonar_tx_gpio = {
     .db_name = "ss_tx_pin",
     .type = UINT8,
@@ -426,9 +431,12 @@ db_parameter_t db_param_sonar_tx_gpio = {
                   .value = 17,
                   .default_value = 17,
                   .min = 0,
-                  .max = 39,
+                  .max = SOC_GPIO_IN_RANGE_MAX,
               }}};
 
+/**
+ * RX GPIO number of the hardwired sonar UART. See the TX pin note above.
+ */
 db_parameter_t db_param_sonar_rx_gpio = {
     .db_name = "ss_rx_pin",
     .type = UINT8,
@@ -442,7 +450,7 @@ db_parameter_t db_param_sonar_rx_gpio = {
                   .value = 16,
                   .default_value = 16,
                   .min = 0,
-                  .max = 39,
+                  .max = SOC_GPIO_IN_RANGE_MAX,
               }}};
 
 db_parameter_t db_param_deeper_en = {.db_name = "ss_deeper_en",
@@ -953,6 +961,113 @@ void db_param_read_all_params_json(const cJSON *root_obj) {
       break;
     }
   }
+}
+
+/**
+ * Appends "name (reason)" to a comma separated list kept in buf.
+ */
+static void db_param_append_reject(char *buf, size_t buf_size, const char *name,
+                                   const char *reason) {
+  if (buf == NULL || buf_size == 0) {
+    return;
+  }
+  size_t used = strlen(buf);
+  if (used >= buf_size - 1) {
+    return; // full - the count returned by the caller still reports the truth
+  }
+  snprintf(buf + used, buf_size - used, "%s%s (%s)", used > 0 ? ", " : "", name,
+           reason);
+}
+
+/**
+ * Checks a settings JSON WITHOUT applying anything, so a caller can tell the
+ * user which values would be refused and why.
+ *
+ * db_param_read_all_params_json() drops out-of-range values silently: the
+ * parameter simply keeps its old value and the caller has no way to notice.
+ * That made a too-narrow GPIO ceiling look like "the board does not save its
+ * settings". Validate first, then apply, and nothing is discarded in silence.
+ *
+ * Stricter than the applier on purpose: the applier truncates to the target
+ * width before range checking, so 300 becomes 44 and passes. Here the value is
+ * range checked as supplied, before any narrowing.
+ *
+ * @param root_obj JSON with the parameters to check
+ * @param err_buf Receives the human readable list of rejects. May be NULL.
+ * @param err_buf_size Size of err_buf
+ * @return Number of rejected parameters; 0 means every supplied value is valid
+ */
+int db_param_validate_json(const cJSON *root_obj, char *err_buf,
+                           size_t err_buf_size) {
+  int rejected = 0;
+  if (err_buf != NULL && err_buf_size > 0) {
+    err_buf[0] = '\0';
+  }
+
+  for (int i = 0; i < sizeof(db_params) / sizeof(db_params[0]); i++) {
+    const cJSON *jobject =
+        cJSON_GetObjectItem(root_obj, (char *)db_params[i]->db_name);
+    if (jobject == NULL) {
+      continue; // not supplied - the applier leaves the current value alone
+    }
+
+    char reason[72];
+    reason[0] = '\0';
+
+    if (db_params[i]->type == STRING) {
+      if (cJSON_IsNull(jobject)) {
+        continue; // the applier reads this as "clear the string"
+      }
+      if (!cJSON_IsString(jobject)) {
+        snprintf(reason, sizeof(reason), "expected text");
+      } else if (!db_param_is_valid_str(jobject->valuestring, db_params[i])) {
+        snprintf(reason, sizeof(reason), "length must be %u-%u characters",
+                 db_params[i]->value.db_param_str.min_len,
+                 db_params[i]->value.db_param_str.max_len);
+      }
+    } else if (!cJSON_IsNumber(jobject) && !cJSON_IsBool(jobject)) {
+      snprintf(reason, sizeof(reason), "expected a number");
+    } else {
+      const int raw = jobject->valueint;
+      switch (db_params[i]->type) {
+      case UINT8:
+        if (raw < (int)db_params[i]->value.db_param_u8.min ||
+            raw > (int)db_params[i]->value.db_param_u8.max) {
+          snprintf(reason, sizeof(reason), "allowed %u-%u, got %d",
+                   db_params[i]->value.db_param_u8.min,
+                   db_params[i]->value.db_param_u8.max, raw);
+        }
+        break;
+      case UINT16:
+        if (raw < (int)db_params[i]->value.db_param_u16.min ||
+            raw > (int)db_params[i]->value.db_param_u16.max) {
+          snprintf(reason, sizeof(reason), "allowed %u-%u, got %d",
+                   db_params[i]->value.db_param_u16.min,
+                   db_params[i]->value.db_param_u16.max, raw);
+        }
+        break;
+      case INT32:
+        if (!db_param_is_valid_i32((int32_t)raw, db_params[i])) {
+          snprintf(reason, sizeof(reason), "allowed %li-%li, got %d",
+                   (long)db_params[i]->value.db_param_i32.min,
+                   (long)db_params[i]->value.db_param_i32.max, raw);
+        }
+        break;
+      default:
+        snprintf(reason, sizeof(reason), "unknown parameter type");
+        break;
+      }
+    }
+
+    if (reason[0] != '\0') {
+      rejected++;
+      db_param_append_reject(err_buf, err_buf_size,
+                             (char *)db_params[i]->db_name, reason);
+      ESP_LOGW(TAG, "Rejected parameter %s: %s", db_params[i]->db_name, reason);
+    }
+  }
+
+  return rejected;
 }
 
 /**

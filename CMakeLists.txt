@@ -4,25 +4,25 @@ cmake_minimum_required(VERSION 3.10)
 
 add_custom_target(
         frontend
-        # add final and temporary build directory for the frontend. That way npm does not need to know the CMAKE_BINARY_DIR which can variable
+        # Build the self-contained frontend with the ESP-IDF-pinned Python.
         COMMAND cmake -E make_directory "${CMAKE_BINARY_DIR}/frontend"
-        COMMAND cmake -E make_directory "${CMAKE_SOURCE_DIR}/frontend/build"
-        # Run frontend npm build process
-        COMMAND npm install && npm run build
+        COMMAND ${PYTHON} "${CMAKE_SOURCE_DIR}/tools/build_frontend.py"
+                --input "${CMAKE_SOURCE_DIR}/frontend"
+                --output "${CMAKE_SOURCE_DIR}/frontend/build"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/frontend")
-# Copy the content of npm to the build directory
+# Copy the generated frontend to the build directory.
 add_custom_command(
         TARGET frontend POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_SOURCE_DIR}/frontend/build"
         "${CMAKE_BINARY_DIR}/frontend")
-# delete npm temp build folder
+# Delete the temporary source-tree build folder.
 add_custom_command (
         TARGET frontend
         POST_BUILD
         COMMAND cmake -E remove_directory "${CMAKE_SOURCE_DIR}/frontend/build"
 )
-set(PROJECT_VER "1.0.1")
+set(PROJECT_VER "0.2")
 
 # --- DBB Companion: optional private brain -------------------------------
 # If the private brain folder exists next door, pull it into the build so its

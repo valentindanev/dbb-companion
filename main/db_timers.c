@@ -46,6 +46,20 @@ static TickType_t s_last_deeper_temp_log_tick = 0;
 static bool s_sonar_task_missing_logged = false;
 static uint8_t s_sonar_publish_buffer[296];
 static fmav_status_t s_sonar_mav_status = {0};
+static db_sonar_publish_diagnostics_t s_sonar_diagnostics = {
+    .last_published_depth_mm = -1,
+    .last_publish_age_ms = UINT32_MAX,
+};
+static uint32_t s_last_deeper_depth_count = 0;
+static portMUX_TYPE s_sonar_diagnostics_mux = portMUX_INITIALIZER_UNLOCKED;
+
+void db_get_sonar_publish_diagnostics(
+    db_sonar_publish_diagnostics_t *diagnostics) {
+  if (diagnostics == NULL) return;
+  taskENTER_CRITICAL(&s_sonar_diagnostics_mux);
+  *diagnostics = s_sonar_diagnostics;
+  taskEXIT_CRITICAL(&s_sonar_diagnostics_mux);
+}
 
 static bool db_wifi_runtime_has_sta(void) {
   wifi_mode_t mode = WIFI_MODE_NULL;
@@ -248,17 +262,26 @@ static void db_publish_active_sonar_distance(void) {
     return;
   }
 
+  if (DB_ACTIVE_SONAR_SOURCE == DB_SONAR_SOURCE_HARDWIRED) {
+    db_sonar_log_maybe_log_hardwired_session_sample();
+  }
+
   int distance_mm = -1;
   bool use_deeper_sonar = false;
   if (!db_get_active_sonar_distance(&distance_mm, &use_deeper_sonar) ||
       distance_mm < 0) {
+    if (DB_ACTIVE_SONAR_SOURCE == DB_SONAR_SOURCE_DEEPER) {
+      taskENTER_CRITICAL(&s_sonar_diagnostics_mux);
+      s_sonar_diagnostics.deeper_no_data_skip_count++;
+      taskEXIT_CRITICAL(&s_sonar_diagnostics_mux);
+    }
     return;
   }
 
   fmav_distance_sensor_t payload = {0};
   payload.time_boot_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-  payload.min_distance = use_deeper_sonar ? 0 : 28;
-  payload.max_distance = use_deeper_sonar ? 10000 : 450;
+  payload.min_distance = use_deeper_sonar ? 0 : 5;
+  payload.max_distance = use_deeper_sonar ? 10000 : 600;
   payload.current_distance = distance_mm / 10; // Convert mm to cm
   payload.type = 1; // MAV_DISTANCE_SENSOR_ULTRASOUND
   payload.id = use_deeper_sonar ? 1 : 0;
@@ -270,15 +293,29 @@ static void db_publish_active_sonar_distance(void) {
       191, // MAV_COMP_ID_GIMBAL or MAV_COMP_ID_PERIPHERAL
       &payload, &s_sonar_mav_status);
 
-  // Send to Flight Controller (Serial) AND Ground Control Station (Radio)
   write_to_serial(s_sonar_publish_buffer, len);
   db_send_to_all_radio_clients(s_sonar_publish_buffer, len);
 
+  if (use_deeper_sonar) {
+    deeper_udp_diagnostics_t deeper_diagnostics = {0};
+    deeper_udp_sonar_get_diagnostics(&deeper_diagnostics);
+    taskENTER_CRITICAL(&s_sonar_diagnostics_mux);
+    s_sonar_diagnostics.deeper_publish_count++;
+    if (deeper_diagnostics.depth_count != s_last_deeper_depth_count) {
+      s_sonar_diagnostics.deeper_fresh_publish_count++;
+      s_last_deeper_depth_count = deeper_diagnostics.depth_count;
+    }
+    s_sonar_diagnostics.last_published_depth_mm = distance_mm;
+    s_sonar_diagnostics.last_publish_age_ms =
+        deeper_diagnostics.last_depth_age_ms;
+    taskEXIT_CRITICAL(&s_sonar_diagnostics_mux);
+  }
+
   TickType_t now = xTaskGetTickCount();
   if ((now - s_last_sonar_log_tick) >= pdMS_TO_TICKS(1000)) {
+    const char *source_name = use_deeper_sonar ? "Deeper" : "hardwired";
     ESP_LOGI(TAG, "Publishing %s sonar DISTANCE_SENSOR: %d mm (%d cm)",
-             use_deeper_sonar ? "Deeper" : "hardwired", distance_mm,
-             payload.current_distance);
+             source_name, distance_mm, payload.current_distance);
     s_last_sonar_log_tick = now;
   }
 

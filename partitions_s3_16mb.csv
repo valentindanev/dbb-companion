@@ -1,0 +1,63 @@
+# DBB Companion - ESP32-S3-WROOM-1 N16R8, 16 MiB flash.
+# Table lives at CONFIG_PARTITION_TABLE_OFFSET=0x20000.
+#
+# RECOVERY MODEL
+#   `factory` holds a known-good golden image. ESP-IDF's OTA rotation never
+#   targets a factory partition, so it cannot be overwritten by an update.
+#   The bootloader falls back to it in two independent ways:
+#     1. both otadata entries invalid -> "Defaulting to factory image"
+#     2. the selected app image fails to verify -> the backwards partition
+#        scan terminates at factory
+#   `app_count` counts only ota_* partitions, so it is 2 here. The bootloader's
+#   (ota_seq - 1) % app_count therefore matches the firmware's two-slot
+#   rotation exactly. Adding a third ota_* slot would break that agreement.
+#
+# NOT A SECURE LAYOUT
+#   Secure Boot and Flash Encryption are off. There are deliberately no
+#   `encrypted` flags and no nvs_keys partition: NVS encryption requires flash
+#   encryption, which requires burning eFuses, which is a full re-provisioning
+#   that would involve a serial reflash anyway. Reserving space for it buys
+#   nothing. Do not reintroduce either without a deliberate decision.
+#
+# DEVELOPMENT ARTIFACT, NOT FROZEN
+#   This table serves development. The final one gets built when the product is
+#   ready and the target silicon is chosen - the ESP32-S3 may not be the part a
+#   year from now. Do not optimise it for hypothetical future needs; reflashing
+#   is cheap while the boards are on the desk.
+#
+# *** BEFORE RESIZING ANYTHING HERE, READ THIS ***
+#   db_a and db_b are load-bearing. main/db_location_store.c refuses to
+#   initialise unless BOTH are exactly 128 KiB:
+#       DB_LOCATION_SLOT_SIZE (0x20000) * DB_LOCATION_SLOT_COUNT (1)
+#   Change either partition's size without changing those two constants in the
+#   SAME commit and the location database does not crash - it silently fails to
+#   mount, and the boat comes up with no saved points.
+#   The `diag` partition is likewise read in 4096-byte records by
+#   main/db_diag.c (DB_DIAG_SECTOR_SIZE); its size must stay a multiple of that
+#   and at least two sectors.
+#   Any resize is a full serial reflash of both boards - OTA cannot repartition.
+#
+# SIZING NOTES (revised 09-08-2026)
+#   db_a/db_b were 512 KiB each. The database is capped at 768 records x 96 B =
+#   72 KiB, so one 128 KiB slot per side holds every record that can ever exist.
+#   A/B alternation is unchanged: consecutive generations still land in
+#   different partitions, so one partition can be destroyed without loss.
+#   Tradeoff accepted: 8 snapshot slots became 2, so erase wear concentrates.
+#   A commit only occurs when a lake/swim/point is added or edited, so even
+#   10,000 lifetime edits is ~5,000 erases per block against a ~100,000 budget.
+#   The 768 KiB freed here, plus the 2,880 KiB `store` partition that nothing
+#   used, went to `logs`: 2 MiB -> 5,696 KiB (2.78x). Longer lake sessions can
+#   be recorded before the log starts trimming its own oldest entries.
+#
+# Name,   Type, SubType,  Offset,    Size,  Flags
+nvs,      data, nvs,      0x21000,   48K,
+otadata,  data, ota,      0x2d000,   8K,
+phy_init, data, phy,      0x2f000,   4K,
+factory,  app,  factory,  0x30000,   3M,
+ota_0,    app,  ota_0,    0x330000,  3M,
+ota_1,    app,  ota_1,    0x630000,  3M,
+coredump, data, coredump, 0x930000,  512K,
+db_a,     data, 0x40,     0x9b0000,  128K,
+db_b,     data, 0x41,     0x9d0000,  128K,
+diag,     data, 0x42,     0x9f0000,  512K,
+logs,     data, fat,      0xa70000,  5696K,

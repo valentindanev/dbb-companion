@@ -47,6 +47,7 @@
 
 uint8_t DB_MAV_SYS_ID = 1;
 uint32_t serial_total_byte_count = 0;
+uint32_t serial_total_sent_byte_count = 0;
 uint32_t serial_total_decoded_mav_msgs = 0;
 uint16_t DB_SERIAL_READ_TIMEOUT_MS = DB_SERIAL_READ_TIMEOUT_MS_DEFAULT;
 
@@ -132,9 +133,10 @@ esp_err_t open_serial_socket() {
  * @param data_length Size of payload to write to UART
  */
 void write_to_serial(const uint8_t data_buffer[], const unsigned int data_length) {
+    int written = 0;
 #ifdef CONFIG_DB_SERIAL_OPTION_JTAG
     // Writes data from buffer to JTAG based serial interface
-    int written = usb_serial_jtag_write_bytes(data_buffer, data_length, 20 / portTICK_PERIOD_MS);
+    written = usb_serial_jtag_write_bytes(data_buffer, data_length, 20 / portTICK_PERIOD_MS);
     if (written != data_length) {
         ESP_LOGW(TAG, "Wrote only %i of %i bytes to JTAG", written, data_length);
     } else {
@@ -149,7 +151,7 @@ void write_to_serial(const uint8_t data_buffer[], const unsigned int data_length
         return;
     }
     // Writes data from buffer to native UART interface
-    int written = uart_write_bytes(UART_NUM, data_buffer, data_length);
+    written = uart_write_bytes(UART_NUM, data_buffer, data_length);
     if (written != data_length) {
         // This is a debug log since it happens very rarely that not all bytes get written. Save some cpu cycles.
         ESP_LOGD(TAG, "Wrote only %i of %i bytes to UART", written, data_length);
@@ -157,6 +159,10 @@ void write_to_serial(const uint8_t data_buffer[], const unsigned int data_length
         // all good
     }
 #endif
+    if (written > 0) {
+        __atomic_fetch_add(&serial_total_sent_byte_count, (uint32_t)written,
+                           __ATOMIC_RELAXED);
+    }
 }
 
 /**

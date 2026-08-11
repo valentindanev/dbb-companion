@@ -26,6 +26,8 @@
 
 #define DB_WEB_PARTITION_LABEL "www"
 
+struct db_udp_client_t;
+
 #ifdef CONFIG_DB_HAS_RF_SWITCH
 #define DB_HAS_RF_SWITCH 1
 #else

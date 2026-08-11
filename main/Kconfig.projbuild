@@ -88,6 +88,12 @@ menu "DroneBridge for ESP32 Configuration"
             help
                 Deploy website to SPI Nor Flash.
                 Choose this in production mode or if the size of website is small (less than 2MB).
+        config WEB_DEPLOY_EMBEDDED
+            bool "Embed website in the application image"
+            help
+                Build the frontend into the application image. Firmware and web UI
+                are then updated atomically through the normal OTA slot, so there is
+                no separate web partition that can drift out of step with the code.
     endchoice
 
     if WEB_DEPLOY_SEMIHOST
@@ -104,5 +110,72 @@ menu "DroneBridge for ESP32 Configuration"
         default "/www"
         help
             Specify the mount point in VFS.
+
+    config DB_LOG_STORAGE_FATFS
+        bool "Use FATFS with wear levelling for persistent logs"
+        default y if IDF_TARGET_ESP32S3
+        default n
+        help
+            Store persistent sonar logs in the partition labelled logs using
+            FATFS and the ESP-IDF wear-levelling layer. Leave disabled for the
+            legacy SPIFFS logs layout.
+
+    config DB_DIAG_JOURNAL
+        bool "Use the dedicated persistent diagnostic journal"
+        default y if IDF_TARGET_ESP32S3
+        default n
+        help
+            Store power-loss-safe, CRC32C-protected boot and lifecycle records
+            in the partition labelled diag. One record occupies one erase
+            sector so writes rotate evenly across the partition.
+
+    config DB_DIAG_BENCH_CRASH_TEST
+        bool "Expose destructive bench-only coredump test endpoints"
+        depends on DB_DIAG_JOURNAL && ESP_COREDUMP_ENABLE_TO_FLASH
+        default n
+        help
+            Adds endpoints that deliberately abort the firmware and erase the
+            resulting coredump. Never enable this in a deployed build.
+
+    config DB_LOCATION_STORE
+        bool "Use the dedicated A/B fishing-location database"
+        default y if IDF_TARGET_ESP32S3
+        default n
+        help
+            Store versioned, checksummed fishing-location snapshots in rotating
+            slots across the dedicated db_a and db_b partitions. Commits write
+            payload first and the validated header last, preserving the prior
+            partition through power loss.
+
+    config DB_LOCATION_BENCH_TEST
+        bool "Expose destructive bench-only location database tests"
+        depends on DB_LOCATION_STORE
+        default n
+        help
+            Adds synthetic seed/rename and active-header corruption actions for
+            A/B recovery testing. Never enable this in a deployed build.
+
+    config DB_OTA_HEALTH_GATE
+        bool "Require the DBB post-OTA health gate"
+        depends on BOOTLOADER_APP_ROLLBACK_ENABLE
+        default n
+        help
+            Do not confirm a freshly booted OTA image until storage, the web UI,
+            radio, control, the REST API, and FC/sonar where fitted have all
+            reported healthy. Failure or timeout marks the image invalid and
+            reboots into the previous slot.
+
+            This depends on BOOTLOADER_APP_ROLLBACK_ENABLE for a reason: without
+            it the bootloader never promotes an image to PENDING_VERIFY, so the
+            gate can never arm and silently does nothing.
+
+    config DB_OTA_HEALTH_TIMEOUT_SECONDS
+        int "Pending OTA health-gate timeout in seconds"
+        depends on DB_OTA_HEALTH_GATE
+        range 60 3600
+        default 600
+        help
+            Maximum time for every required health item to pass before the
+            candidate is marked invalid and rollback is requested.
 
 endmenu

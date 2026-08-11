@@ -18,10 +18,14 @@
  */
 #include <string.h>
 #include <esp_log.h>
+#include <esp_timer.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
 
 #include "db_mavlink_msgs.h"
 #include "db_parameters.h"
 #include "db_serial.h"
+#include "db_sonar_log.h"
 #include "globals.h"
 #include "main.h"
 #include "dbb_brain.h"
@@ -37,6 +41,434 @@
 #define FASTMAVLINK_ROUTER_COMPONENTS_MAX  5
 
 #define TAG "DB_MAV_MSGS"
+
+typedef struct {
+    bool seen;
+    bool armed;
+    uint8_t sysid;
+    uint8_t compid;
+    uint8_t type;
+    uint8_t autopilot;
+    uint8_t base_mode;
+    uint32_t custom_mode;
+    uint8_t system_status;
+    int64_t last_heartbeat_us;
+} db_mavlink_fc_state_internal_t;
+
+static db_mavlink_fc_state_internal_t s_fc_state;
+static portMUX_TYPE s_fc_state_mux = portMUX_INITIALIZER_UNLOCKED;
+
+typedef struct {
+    db_mavlink_rc_state_t rc;
+    db_mavlink_power_state_t power;
+    db_mavlink_battery_state_t battery;
+    db_mavlink_gps_state_t gps;
+    db_mavlink_system_state_t system;
+    db_mavlink_time_state_t time;
+    db_mavlink_attitude_state_t attitude;
+    db_mavlink_position_state_t position;
+    db_mavlink_vfr_state_t vfr;
+    db_mavlink_pressure_state_t pressure;
+    db_mavlink_imu_state_t raw_imu;
+    db_mavlink_imu_state_t scaled_imu2;
+    db_mavlink_mission_state_t mission;
+    db_mavlink_servo_state_t servo;
+    db_mavlink_vibration_state_t vibration;
+    db_mavlink_timesync_state_t timesync;
+    db_mavlink_statustext_state_t statustext;
+    db_mavlink_distance_sensor_state_t returned_distance_sensor;
+    int64_t rc_last_us;
+    int64_t power_last_us;
+    int64_t battery_last_us;
+    int64_t gps_last_us;
+    int64_t returned_distance_sensor_last_us;
+    int64_t system_last_us, time_last_us, attitude_last_us, position_last_us;
+    int64_t vfr_last_us, pressure_last_us, raw_imu_last_us, scaled_imu2_last_us;
+    int64_t mission_last_us, servo_last_us, vibration_last_us, timesync_last_us;
+    int64_t statustext_last_us;
+    uint8_t message_stat_count;
+    struct { uint32_t id; uint32_t count; int64_t last_us; }
+        message_stats[DB_MAVLINK_TELEMETRY_MSG_TYPES_MAX];
+} db_mavlink_telemetry_cache_t;
+
+static db_mavlink_telemetry_cache_t s_telemetry_cache;
+static portMUX_TYPE s_telemetry_cache_mux = portMUX_INITIALIZER_UNLOCKED;
+
+void db_mavlink_get_gps_state(db_mavlink_gps_state_t *out_state) {
+    if (out_state == NULL) return;
+
+    db_mavlink_gps_state_t gps = {0};
+    int64_t gps_last_us = 0;
+    taskENTER_CRITICAL(&s_telemetry_cache_mux);
+    gps = s_telemetry_cache.gps;
+    gps_last_us = s_telemetry_cache.gps_last_us;
+    taskEXIT_CRITICAL(&s_telemetry_cache_mux);
+
+    if (!gps.valid || gps_last_us <= 0) {
+        gps.age_ms = -1;
+    } else {
+        int64_t age_us = esp_timer_get_time() - gps_last_us;
+        gps.age_ms = age_us > 0 ? age_us / 1000 : 0;
+    }
+    *out_state = gps;
+}
+
+const char *db_mavlink_mode_name(uint8_t autopilot, uint8_t type,
+                                 uint32_t custom_mode) {
+    if (autopilot != MAV_AUTOPILOT_ARDUPILOTMEGA) {
+        return "unknown";
+    }
+
+    if (type != MAV_TYPE_GROUND_ROVER && type != MAV_TYPE_SURFACE_BOAT) {
+        return "unknown";
+    }
+
+    switch (custom_mode) {
+    case 0:
+        return "MANUAL";
+    case 1:
+        return "ACRO";
+    case 3:
+        return "STEERING";
+    case 4:
+        return "HOLD";
+    case 5:
+        return "LOITER";
+    case 6:
+        return "FOLLOW";
+    case 7:
+        return "SIMPLE";
+    case 10:
+        return "AUTO";
+    case 11:
+        return "RTL";
+    case 12:
+        return "SMART_RTL";
+    case 15:
+        return "GUIDED";
+    case 16:
+        return "INITIALISING";
+    default:
+        return "unknown";
+    }
+}
+
+static void db_mavlink_update_fc_state(const fmav_message_t *msg,
+                                       const fmav_heartbeat_t *heartbeat) {
+    if (msg == NULL || heartbeat == NULL) {
+        return;
+    }
+
+    taskENTER_CRITICAL(&s_fc_state_mux);
+    s_fc_state.seen = true;
+    s_fc_state.armed =
+        (heartbeat->base_mode & MAV_MODE_FLAG_SAFETY_ARMED) != 0;
+    s_fc_state.sysid = msg->sysid;
+    s_fc_state.compid = msg->compid;
+    s_fc_state.type = heartbeat->type;
+    s_fc_state.autopilot = heartbeat->autopilot;
+    s_fc_state.base_mode = heartbeat->base_mode;
+    s_fc_state.custom_mode = heartbeat->custom_mode;
+    s_fc_state.system_status = heartbeat->system_status;
+    s_fc_state.last_heartbeat_us = esp_timer_get_time();
+    taskEXIT_CRITICAL(&s_fc_state_mux);
+    db_sonar_log_note_fc_armed_state(
+        (heartbeat->base_mode & MAV_MODE_FLAG_SAFETY_ARMED) != 0);
+}
+
+void db_mavlink_get_fc_state(db_mavlink_fc_state_t *out_state) {
+    if (out_state == NULL) {
+        return;
+    }
+
+    memset(out_state, 0, sizeof(*out_state));
+    db_mavlink_fc_state_internal_t local_state = {0};
+
+    taskENTER_CRITICAL(&s_fc_state_mux);
+    local_state = s_fc_state;
+    taskEXIT_CRITICAL(&s_fc_state_mux);
+
+    out_state->seen = local_state.seen;
+    out_state->armed = local_state.armed;
+    out_state->sysid = local_state.sysid;
+    out_state->compid = local_state.compid;
+    out_state->type = local_state.type;
+    out_state->autopilot = local_state.autopilot;
+    out_state->base_mode = local_state.base_mode;
+    out_state->custom_mode = local_state.custom_mode;
+    out_state->system_status = local_state.system_status;
+    out_state->mode_name = db_mavlink_mode_name(
+        local_state.autopilot, local_state.type, local_state.custom_mode);
+
+    if (!local_state.seen || local_state.last_heartbeat_us <= 0) {
+        out_state->stale = true;
+        out_state->heartbeat_age_ms = UINT32_MAX;
+        return;
+    }
+
+    int64_t age_us = esp_timer_get_time() - local_state.last_heartbeat_us;
+    if (age_us < 0) {
+        age_us = 0;
+    }
+    out_state->heartbeat_age_ms = (uint32_t)(age_us / 1000);
+    out_state->stale =
+        out_state->heartbeat_age_ms > DB_MAVLINK_FC_HEARTBEAT_STALE_MS;
+}
+
+/* Called only for messages received from the physical FC UART. */
+static void db_mavlink_update_telemetry_cache(const fmav_message_t *msg) {
+    if (msg == NULL) return;
+
+    const int64_t now = esp_timer_get_time();
+    taskENTER_CRITICAL(&s_telemetry_cache_mux);
+    int message_index = -1;
+    for (int i = 0; i < s_telemetry_cache.message_stat_count; i++) {
+        if (s_telemetry_cache.message_stats[i].id == msg->msgid) {
+            message_index = i;
+            break;
+        }
+    }
+    if (message_index < 0 && s_telemetry_cache.message_stat_count <
+                                 DB_MAVLINK_TELEMETRY_MSG_TYPES_MAX) {
+        message_index = s_telemetry_cache.message_stat_count++;
+        s_telemetry_cache.message_stats[message_index].id = msg->msgid;
+        s_telemetry_cache.message_stats[message_index].count = 0;
+    }
+    if (message_index >= 0) {
+        s_telemetry_cache.message_stats[message_index].count++;
+        s_telemetry_cache.message_stats[message_index].last_us = now;
+    }
+    taskEXIT_CRITICAL(&s_telemetry_cache_mux);
+    switch (msg->msgid) {
+    case FASTMAVLINK_MSG_ID_SYS_STATUS: {
+        fmav_sys_status_t status; fmav_msg_sys_status_decode(&status, msg);
+        taskENTER_CRITICAL(&s_telemetry_cache_mux);
+        s_telemetry_cache.system = (db_mavlink_system_state_t){.valid=true, .load=status.load, .voltage_mv=status.voltage_battery, .current_ca=status.current_battery, .remaining_pct=status.battery_remaining, .drop_rate_comm=status.drop_rate_comm, .errors_comm=status.errors_comm, .sensors_present=status.onboard_control_sensors_present, .sensors_enabled=status.onboard_control_sensors_enabled, .sensors_health=status.onboard_control_sensors_health};
+        s_telemetry_cache.system_last_us = now;
+        taskEXIT_CRITICAL(&s_telemetry_cache_mux); break;
+    }
+    case FASTMAVLINK_MSG_ID_SYSTEM_TIME: {
+        fmav_system_time_t time; fmav_msg_system_time_decode(&time, msg);
+        taskENTER_CRITICAL(&s_telemetry_cache_mux);
+        s_telemetry_cache.time = (db_mavlink_time_state_t){.valid=true, .unix_usec=time.time_unix_usec, .boot_ms=time.time_boot_ms}; s_telemetry_cache.time_last_us=now;
+        taskEXIT_CRITICAL(&s_telemetry_cache_mux); break;
+    }
+    case FASTMAVLINK_MSG_ID_ATTITUDE: {
+        fmav_attitude_t attitude; fmav_msg_attitude_decode(&attitude, msg);
+        taskENTER_CRITICAL(&s_telemetry_cache_mux);
+        s_telemetry_cache.attitude=(db_mavlink_attitude_state_t){.valid=true,.roll_rad=attitude.roll,.pitch_rad=attitude.pitch,.yaw_rad=attitude.yaw,.rollspeed=attitude.rollspeed,.pitchspeed=attitude.pitchspeed,.yawspeed=attitude.yawspeed}; s_telemetry_cache.attitude_last_us=now;
+        taskEXIT_CRITICAL(&s_telemetry_cache_mux); break;
+    }
+    case FASTMAVLINK_MSG_ID_GLOBAL_POSITION_INT: {
+        fmav_global_position_int_t position; fmav_msg_global_position_int_decode(&position, msg);
+        taskENTER_CRITICAL(&s_telemetry_cache_mux);
+        s_telemetry_cache.position=(db_mavlink_position_state_t){.valid=true,.latitude_e7=position.lat,.longitude_e7=position.lon,.altitude_mm=position.alt,.relative_altitude_mm=position.relative_alt,.vx_cms=position.vx,.vy_cms=position.vy,.vz_cms=position.vz,.heading_cdeg=position.hdg}; s_telemetry_cache.position_last_us=now;
+        taskEXIT_CRITICAL(&s_telemetry_cache_mux); break;
+    }
+    case FASTMAVLINK_MSG_ID_VFR_HUD: {
+        fmav_vfr_hud_t vfr; fmav_msg_vfr_hud_decode(&vfr, msg);
+        taskENTER_CRITICAL(&s_telemetry_cache_mux);
+        s_telemetry_cache.vfr=(db_mavlink_vfr_state_t){.valid=true,.airspeed_mps=vfr.airspeed,.groundspeed_mps=vfr.groundspeed,.heading_deg=vfr.heading,.throttle_pct=vfr.throttle,.altitude_m=vfr.alt,.climb_mps=vfr.climb}; s_telemetry_cache.vfr_last_us=now;
+        taskEXIT_CRITICAL(&s_telemetry_cache_mux); break;
+    }
+    case FASTMAVLINK_MSG_ID_SCALED_PRESSURE: {
+        fmav_scaled_pressure_t pressure; fmav_msg_scaled_pressure_decode(&pressure, msg);
+        taskENTER_CRITICAL(&s_telemetry_cache_mux);
+        s_telemetry_cache.pressure=(db_mavlink_pressure_state_t){.valid=true,.press_abs_hpa=pressure.press_abs,.press_diff_hpa=pressure.press_diff,.temperature_cdeg=pressure.temperature}; s_telemetry_cache.pressure_last_us=now;
+        taskEXIT_CRITICAL(&s_telemetry_cache_mux); break;
+    }
+    case FASTMAVLINK_MSG_ID_RAW_IMU: {
+        fmav_raw_imu_t imu; fmav_msg_raw_imu_decode(&imu, msg);
+        taskENTER_CRITICAL(&s_telemetry_cache_mux);
+        s_telemetry_cache.raw_imu=(db_mavlink_imu_state_t){.valid=true,.xacc=imu.xacc,.yacc=imu.yacc,.zacc=imu.zacc,.xgyro=imu.xgyro,.ygyro=imu.ygyro,.zgyro=imu.zgyro,.xmag=imu.xmag,.ymag=imu.ymag,.zmag=imu.zmag}; s_telemetry_cache.raw_imu_last_us=now;
+        taskEXIT_CRITICAL(&s_telemetry_cache_mux); break;
+    }
+    case FASTMAVLINK_MSG_ID_SCALED_IMU2: {
+        fmav_scaled_imu2_t imu; fmav_msg_scaled_imu2_decode(&imu, msg);
+        taskENTER_CRITICAL(&s_telemetry_cache_mux);
+        s_telemetry_cache.scaled_imu2=(db_mavlink_imu_state_t){.valid=true,.xacc=imu.xacc,.yacc=imu.yacc,.zacc=imu.zacc,.xgyro=imu.xgyro,.ygyro=imu.ygyro,.zgyro=imu.zgyro,.xmag=imu.xmag,.ymag=imu.ymag,.zmag=imu.zmag}; s_telemetry_cache.scaled_imu2_last_us=now;
+        taskEXIT_CRITICAL(&s_telemetry_cache_mux); break;
+    }
+    case FASTMAVLINK_MSG_ID_MISSION_CURRENT: {
+        fmav_mission_current_t mission; fmav_msg_mission_current_decode(&mission, msg);
+        taskENTER_CRITICAL(&s_telemetry_cache_mux); s_telemetry_cache.mission=(db_mavlink_mission_state_t){.valid=true,.seq=mission.seq}; s_telemetry_cache.mission_last_us=now; taskEXIT_CRITICAL(&s_telemetry_cache_mux); break;
+    }
+    case FASTMAVLINK_MSG_ID_SERVO_OUTPUT_RAW: {
+        fmav_servo_output_raw_t servo; fmav_msg_servo_output_raw_decode(&servo, msg);
+        uint16_t raw[16]={servo.servo1_raw,servo.servo2_raw,servo.servo3_raw,servo.servo4_raw,servo.servo5_raw,servo.servo6_raw,servo.servo7_raw,servo.servo8_raw,servo.servo9_raw,servo.servo10_raw,servo.servo11_raw,servo.servo12_raw,servo.servo13_raw,servo.servo14_raw,servo.servo15_raw,servo.servo16_raw};
+        taskENTER_CRITICAL(&s_telemetry_cache_mux); s_telemetry_cache.servo.valid=true; s_telemetry_cache.servo.port=servo.port; memcpy(s_telemetry_cache.servo.raw,raw,sizeof(raw)); s_telemetry_cache.servo_last_us=now; taskEXIT_CRITICAL(&s_telemetry_cache_mux); break;
+    }
+    case FASTMAVLINK_MSG_ID_VIBRATION: {
+        fmav_vibration_t vibration; fmav_msg_vibration_decode(&vibration, msg);
+        taskENTER_CRITICAL(&s_telemetry_cache_mux); s_telemetry_cache.vibration=(db_mavlink_vibration_state_t){.valid=true,.vibration_x=vibration.vibration_x,.vibration_y=vibration.vibration_y,.vibration_z=vibration.vibration_z,.clipping_0=vibration.clipping_0,.clipping_1=vibration.clipping_1,.clipping_2=vibration.clipping_2}; s_telemetry_cache.vibration_last_us=now; taskEXIT_CRITICAL(&s_telemetry_cache_mux); break;
+    }
+    case FASTMAVLINK_MSG_ID_TIMESYNC: {
+        fmav_timesync_t timesync; fmav_msg_timesync_decode(&timesync, msg);
+        taskENTER_CRITICAL(&s_telemetry_cache_mux); s_telemetry_cache.timesync=(db_mavlink_timesync_state_t){.valid=true,.tc1=timesync.tc1,.ts1=timesync.ts1}; s_telemetry_cache.timesync_last_us=now; taskEXIT_CRITICAL(&s_telemetry_cache_mux); break;
+    }
+    case FASTMAVLINK_MSG_ID_STATUSTEXT: {
+        fmav_statustext_t text; fmav_msg_statustext_decode(&text, msg);
+        taskENTER_CRITICAL(&s_telemetry_cache_mux); s_telemetry_cache.statustext.valid=true; s_telemetry_cache.statustext.severity=text.severity; memcpy(s_telemetry_cache.statustext.text,text.text,50); s_telemetry_cache.statustext.text[50]='\0'; s_telemetry_cache.statustext_last_us=now; taskEXIT_CRITICAL(&s_telemetry_cache_mux); break;
+    }
+    case FASTMAVLINK_MSG_ID_RC_CHANNELS: {
+        fmav_rc_channels_t rc;
+        fmav_msg_rc_channels_decode(&rc, msg);
+        uint16_t channels[18] = {rc.chan1_raw, rc.chan2_raw, rc.chan3_raw, rc.chan4_raw,
+                                 rc.chan5_raw, rc.chan6_raw, rc.chan7_raw, rc.chan8_raw,
+                                 rc.chan9_raw, rc.chan10_raw, rc.chan11_raw, rc.chan12_raw,
+                                 rc.chan13_raw, rc.chan14_raw, rc.chan15_raw, rc.chan16_raw,
+                                 rc.chan17_raw, rc.chan18_raw};
+        taskENTER_CRITICAL(&s_telemetry_cache_mux);
+        memcpy(s_telemetry_cache.rc.chan, channels, sizeof(channels));
+        s_telemetry_cache.rc.chancount = rc.chancount > 18 ? 18 : rc.chancount;
+        s_telemetry_cache.rc.rssi = rc.rssi;
+        s_telemetry_cache.rc.updates++;
+        s_telemetry_cache.rc.valid = true;
+        s_telemetry_cache.rc_last_us = now;
+        taskEXIT_CRITICAL(&s_telemetry_cache_mux);
+        break;
+    }
+    case FASTMAVLINK_MSG_ID_RC_CHANNELS_RAW: {
+        fmav_rc_channels_raw_t rc;
+        fmav_msg_rc_channels_raw_decode(&rc, msg);
+        taskENTER_CRITICAL(&s_telemetry_cache_mux);
+        s_telemetry_cache.rc.chan[0]=rc.chan1_raw; s_telemetry_cache.rc.chan[1]=rc.chan2_raw;
+        s_telemetry_cache.rc.chan[2]=rc.chan3_raw; s_telemetry_cache.rc.chan[3]=rc.chan4_raw;
+        s_telemetry_cache.rc.chan[4]=rc.chan5_raw; s_telemetry_cache.rc.chan[5]=rc.chan6_raw;
+        s_telemetry_cache.rc.chan[6]=rc.chan7_raw; s_telemetry_cache.rc.chan[7]=rc.chan8_raw;
+        for (int i = 8; i < 18; i++) s_telemetry_cache.rc.chan[i] = 0xFFFF;
+        s_telemetry_cache.rc.chancount = 8;
+        s_telemetry_cache.rc.rssi = rc.rssi;
+        s_telemetry_cache.rc.updates++;
+        s_telemetry_cache.rc.valid = true;
+        s_telemetry_cache.rc_last_us = now;
+        taskEXIT_CRITICAL(&s_telemetry_cache_mux);
+        break;
+    }
+    case FASTMAVLINK_MSG_ID_POWER_STATUS: {
+        fmav_power_status_t power;
+        fmav_msg_power_status_decode(&power, msg);
+        taskENTER_CRITICAL(&s_telemetry_cache_mux);
+        s_telemetry_cache.power.vcc_mv = power.Vcc;
+        s_telemetry_cache.power.vservo_mv = power.Vservo;
+        s_telemetry_cache.power.flags = power.flags;
+        s_telemetry_cache.power.valid = true;
+        s_telemetry_cache.power_last_us = now;
+        taskEXIT_CRITICAL(&s_telemetry_cache_mux);
+        break;
+    }
+    case FASTMAVLINK_MSG_ID_BATTERY_STATUS: {
+        fmav_battery_status_t battery;
+        fmav_msg_battery_status_decode(&battery, msg);
+        taskENTER_CRITICAL(&s_telemetry_cache_mux);
+        s_telemetry_cache.battery.voltage_mv = battery.voltages[0];
+        s_telemetry_cache.battery.current_ca = battery.current_battery;
+        s_telemetry_cache.battery.remaining_pct = battery.battery_remaining;
+        s_telemetry_cache.battery.consumed_mah = battery.current_consumed;
+        s_telemetry_cache.battery.temperature_cdeg = battery.temperature;
+        s_telemetry_cache.battery.valid = true;
+        s_telemetry_cache.battery_last_us = now;
+        taskEXIT_CRITICAL(&s_telemetry_cache_mux);
+        break;
+    }
+    case FASTMAVLINK_MSG_ID_GPS_RAW_INT: {
+        fmav_gps_raw_int_t gps;
+        fmav_msg_gps_raw_int_decode(&gps, msg);
+        taskENTER_CRITICAL(&s_telemetry_cache_mux);
+        s_telemetry_cache.gps.fix_type = gps.fix_type;
+        s_telemetry_cache.gps.satellites_visible = gps.satellites_visible;
+        s_telemetry_cache.gps.eph = gps.eph;
+        s_telemetry_cache.gps.latitude_e7 = gps.lat;
+        s_telemetry_cache.gps.longitude_e7 = gps.lon;
+        s_telemetry_cache.gps.valid = true;
+        s_telemetry_cache.gps_last_us = now;
+        taskEXIT_CRITICAL(&s_telemetry_cache_mux);
+        break;
+    }
+    case FASTMAVLINK_MSG_ID_DISTANCE_SENSOR: {
+        fmav_distance_sensor_t distance_sensor;
+        fmav_msg_distance_sensor_decode(&distance_sensor, msg);
+        taskENTER_CRITICAL(&s_telemetry_cache_mux);
+        if (s_telemetry_cache.returned_distance_sensor_last_us != 0) {
+            uint32_t interval_ms = (uint32_t)((now - s_telemetry_cache.returned_distance_sensor_last_us) / 1000);
+            s_telemetry_cache.returned_distance_sensor.last_interval_ms = interval_ms;
+            if (interval_ms > s_telemetry_cache.returned_distance_sensor.max_interval_ms) {
+                s_telemetry_cache.returned_distance_sensor.max_interval_ms = interval_ms;
+            }
+        }
+        s_telemetry_cache.returned_distance_sensor.count++;
+        s_telemetry_cache.returned_distance_sensor.distance_mm =
+            (int32_t)distance_sensor.current_distance * 10;
+        s_telemetry_cache.returned_distance_sensor.sensor_id = distance_sensor.id;
+        s_telemetry_cache.returned_distance_sensor.sysid = msg->sysid;
+        s_telemetry_cache.returned_distance_sensor.compid = msg->compid;
+        s_telemetry_cache.returned_distance_sensor_last_us = now;
+        taskEXIT_CRITICAL(&s_telemetry_cache_mux);
+        db_sonar_log_note_fc_returned_distance_sensor();
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+void db_mavlink_get_telemetry(db_mavlink_telemetry_t *out_telemetry) {
+    if (out_telemetry == NULL) return;
+
+    memset(out_telemetry, 0, sizeof(*out_telemetry));
+    db_mavlink_get_fc_state(&out_telemetry->fc);
+    db_mavlink_telemetry_cache_t local_cache = {0};
+    taskENTER_CRITICAL(&s_telemetry_cache_mux);
+    local_cache = s_telemetry_cache;
+    taskEXIT_CRITICAL(&s_telemetry_cache_mux);
+
+    const int64_t now = esp_timer_get_time();
+    out_telemetry->rc = local_cache.rc;
+    out_telemetry->power = local_cache.power;
+    out_telemetry->battery = local_cache.battery;
+    out_telemetry->gps = local_cache.gps;
+    out_telemetry->system = local_cache.system;
+    out_telemetry->time = local_cache.time;
+    out_telemetry->attitude = local_cache.attitude;
+    out_telemetry->position = local_cache.position;
+    out_telemetry->vfr = local_cache.vfr;
+    out_telemetry->pressure = local_cache.pressure;
+    out_telemetry->raw_imu = local_cache.raw_imu;
+    out_telemetry->scaled_imu2 = local_cache.scaled_imu2;
+    out_telemetry->mission = local_cache.mission;
+    out_telemetry->servo = local_cache.servo;
+    out_telemetry->vibration = local_cache.vibration;
+    out_telemetry->timesync = local_cache.timesync;
+    out_telemetry->statustext = local_cache.statustext;
+    out_telemetry->returned_distance_sensor = local_cache.returned_distance_sensor;
+    out_telemetry->rc.age_ms = local_cache.rc.valid ? (now - local_cache.rc_last_us) / 1000 : -1;
+    out_telemetry->power.age_ms = local_cache.power.valid ? (now - local_cache.power_last_us) / 1000 : -1;
+    out_telemetry->battery.age_ms = local_cache.battery.valid ? (now - local_cache.battery_last_us) / 1000 : -1;
+    out_telemetry->gps.age_ms = local_cache.gps.valid ? (now - local_cache.gps_last_us) / 1000 : -1;
+    out_telemetry->system.age_ms = local_cache.system.valid ? (now - local_cache.system_last_us) / 1000 : -1;
+    out_telemetry->time.age_ms = local_cache.time.valid ? (now - local_cache.time_last_us) / 1000 : -1;
+    out_telemetry->attitude.age_ms = local_cache.attitude.valid ? (now - local_cache.attitude_last_us) / 1000 : -1;
+    out_telemetry->position.age_ms = local_cache.position.valid ? (now - local_cache.position_last_us) / 1000 : -1;
+    out_telemetry->vfr.age_ms = local_cache.vfr.valid ? (now - local_cache.vfr_last_us) / 1000 : -1;
+    out_telemetry->pressure.age_ms = local_cache.pressure.valid ? (now - local_cache.pressure_last_us) / 1000 : -1;
+    out_telemetry->raw_imu.age_ms = local_cache.raw_imu.valid ? (now - local_cache.raw_imu_last_us) / 1000 : -1;
+    out_telemetry->scaled_imu2.age_ms = local_cache.scaled_imu2.valid ? (now - local_cache.scaled_imu2_last_us) / 1000 : -1;
+    out_telemetry->mission.age_ms = local_cache.mission.valid ? (now - local_cache.mission_last_us) / 1000 : -1;
+    out_telemetry->servo.age_ms = local_cache.servo.valid ? (now - local_cache.servo_last_us) / 1000 : -1;
+    out_telemetry->vibration.age_ms = local_cache.vibration.valid ? (now - local_cache.vibration_last_us) / 1000 : -1;
+    out_telemetry->timesync.age_ms = local_cache.timesync.valid ? (now - local_cache.timesync_last_us) / 1000 : -1;
+    out_telemetry->statustext.age_ms = local_cache.statustext.valid ? (now - local_cache.statustext_last_us) / 1000 : -1;
+    out_telemetry->returned_distance_sensor.age_ms =
+        local_cache.returned_distance_sensor_last_us != 0
+            ? (now - local_cache.returned_distance_sensor_last_us) / 1000 : -1;
+    out_telemetry->message_stat_count = local_cache.message_stat_count;
+    for (int i = 0; i < local_cache.message_stat_count; i++) {
+        out_telemetry->message_stats[i].id = local_cache.message_stats[i].id;
+        out_telemetry->message_stats[i].count = local_cache.message_stats[i].count;
+        out_telemetry->message_stats[i].age_ms =
+            (now - local_cache.message_stats[i].last_us) / 1000;
+    }
+}
 
 /**
  * Based on the system architecture and configured wifi mode the ESP32 may have a different role and system id.
@@ -315,6 +747,11 @@ void handle_mavlink_message(fmav_message_t *new_msg, int *tcp_clients, udp_conn_
                             enum DB_MAVLINK_DATA_ORIGIN origin) {
     static uint8_t buff[296];   // buffer to handle the response messages - no need to init every time
 
+    // Decode generic FC telemetry once, from the physical FC UART only.
+    if (origin == DB_MAVLINK_DATA_ORIGIN_SERIAL) {
+        db_mavlink_update_telemetry_cache(new_msg);
+    }
+
     // DBB Companion brain hook - sees every parsed message (weak no-op in the open base).
     dbb_brain_handle_mavlink(new_msg, origin == DB_MAVLINK_DATA_ORIGIN_SERIAL);
 
@@ -337,6 +774,7 @@ void handle_mavlink_message(fmav_message_t *new_msg, int *tcp_clients, udp_conn_
                     // This means we are connected to the FC since we only parse mavlink on UART and thus only see the
                     // device we are connected to via UART
                     DB_MAV_SYS_ID = new_msg->sysid;
+                    db_mavlink_update_fc_state(new_msg, &payload);
                     // Check if FC is armed and the Wi-Fi switch based on armed status is configured by the user
                     if (DB_PARAM_DIS_RADIO_ON_ARM &&
                     (payload.base_mode & MAV_MODE_FLAG_SAFETY_ARMED ||
@@ -451,6 +889,14 @@ void handle_mavlink_message(fmav_message_t *new_msg, int *tcp_clients, udp_conn_
             ESP_LOGW(TAG, "GCS requested data stream with ID: %i and rate: %i and start_stop: %i - ignoring!",
                      data_stream_pay.req_stream_id, data_stream_pay.req_message_rate, data_stream_pay.start_stop);
         }
+            break;
+        case FASTMAVLINK_MSG_ID_TUNNEL:
+            /*
+             * A linked private DBB brain may consume diagnostic/application
+             * TUNNEL packets in the hook above. The open base intentionally
+             * has no TUNNEL behavior, but this known message must not fall
+             * into the per-packet "unknown targeted message" warning.
+             */
             break;
         default: {
             if (new_msg->target_sysid == db_get_mav_sys_id() && new_msg->target_compid == db_get_mav_comp_id()) {

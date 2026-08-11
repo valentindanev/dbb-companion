@@ -3,6 +3,9 @@ dependencies:
   # espressif/mavlink: "^1.0.0~1"
   espressif/button: "^4.1.3"
   espressif/mdns: "^1.8.2"
+  # USB CDC-ACM host: lets the companion drive the flight controller's USB port
+  # (db_fc_flash.c). Uses the S3's OTG pins - independent of the FC UART.
+  espressif/usb_host_cdc_acm: "^2.0.0"
   ## Required IDF version
   idf:
     version: ">=5.2.0"
