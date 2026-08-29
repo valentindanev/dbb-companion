@@ -50,6 +50,7 @@
 
 #include "deeper_udp_sonar.h"
 #include "danevi_sonar.h"
+#include "sonar_driver.h"
 #include "db_parameters.h"
 #include "db_diag.h"
 #include "db_fc_flash.h"
@@ -1346,7 +1347,20 @@ void app_main() {
 
   if (hardwired_sonar_selected) {
     ota_health_required |= DB_OTA_HEALTH_SONAR;
-    danevi_sonar_init(DB_PARAM_SONAR_TX_GPIO, DB_PARAM_SONAR_RX_GPIO);
+    /* `ss_type` picks the transducer model. Never both: the two sensors share
+     * UART2 and the same TX/RX pins, so exactly one descriptor is ever handed
+     * to the driver. An out-of-range id falls back to the original DYP inside
+     * danevi_sonar_init() rather than leaving the boat with no sounder. */
+    const sonar_driver_t *sonar_model =
+        sonar_driver_get((sonar_model_t)DB_PARAM_SONAR_TYPE);
+    if (sonar_model == NULL) {
+      ESP_LOGW(TAG, "Unknown ss_type=%d, falling back to the DYP-L041MTW",
+               (int)DB_PARAM_SONAR_TYPE);
+    }
+    ESP_LOGI(TAG, "Hardwired sonar model: %s",
+             sonar_driver_name((sonar_model_t)DB_PARAM_SONAR_TYPE));
+    danevi_sonar_init(sonar_model, DB_PARAM_SONAR_TX_GPIO,
+                      DB_PARAM_SONAR_RX_GPIO);
   } else if (DB_ACTIVE_SONAR_SOURCE == DB_SONAR_SOURCE_DEEPER) {
     ota_health_required |= DB_OTA_HEALTH_SONAR;
     ESP_LOGI(TAG, "Deeper selected at boot. Hardwired sonar stays off.");

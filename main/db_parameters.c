@@ -453,6 +453,49 @@ db_parameter_t db_param_sonar_rx_gpio = {
                   .max = SOC_GPIO_IN_RANGE_MAX,
               }}};
 
+/**
+ * Which hardwired transducer model is fitted. 0 = DYP-L041MTW (the original),
+ * 1 = AJ-SR04M / JSN-SR04T. Selects the driver descriptor at boot; the two
+ * sensors share UART2 and are never run together. Takes effect on restart.
+ */
+db_parameter_t db_param_sonar_type = {
+    .db_name = "ss_type",
+    .type = UINT8,
+    .mav_t =
+        {
+            .param_name = "SS_TYPE",
+            .param_index = 21,
+            .param_type = MAV_PARAM_TYPE_UINT8,
+        },
+    .value = {.db_param_u8 = {
+                  .value = 0,
+                  .default_value = 0,
+                  .min = 0,
+                  .max = 1,
+              }}};
+
+/**
+ * Speed of sound in water [m/s] used to rescale sensors that report on the air
+ * constant (the AJ-SR04M does; the DYP does not and ignores this). Fresh water
+ * runs roughly 1450-1500 m/s across a season - about 3 %, a few centimetres at
+ * bait-boat depths. 0 disables rescaling and reports the module's own number.
+ */
+db_parameter_t db_param_water_mps = {
+    .db_name = "ss_water_mps",
+    .type = UINT16,
+    .mav_t =
+        {
+            .param_name = "SS_WATER_MPS",
+            .param_index = 22,
+            .param_type = MAV_PARAM_TYPE_UINT16,
+        },
+    .value = {.db_param_u16 = {
+                  .value = 1480,
+                  .default_value = 1480,
+                  .min = 0,
+                  .max = 2000,
+              }}};
+
 db_parameter_t db_param_deeper_en = {.db_name = "ss_deeper_en",
                                      .type = UINT8,
                                      .mav_t =
@@ -602,6 +645,8 @@ void db_param_init_parameters() {
                                    &db_param_hardwired_en,
                                    &db_param_sonar_tx_gpio,
                                    &db_param_sonar_rx_gpio,
+                                   &db_param_sonar_type,
+                                   &db_param_water_mps,
                                    &db_param_deeper_en,
                                    &db_param_deeper_ssid,
                                    &db_param_deeper_pass};

@@ -2,6 +2,8 @@
 #include "db_fc_flash.h"
 #include "db_fc_params.h"
 #include "db_mavlink_msgs.h"
+#include "db_parameters.h"
+#include "sonar_driver.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -1156,10 +1158,11 @@ void db_sonar_log_log_boot(db_sonar_source_t active_source, int boot_radio_mode,
   db_sonar_log_get_crash_diag(&diag);
   (void)db_log_appendf(
       DB_LOG_STREAM_SYSTEM,
-      "event=boot source=%s radio_mode=%d deeper_connected=%d "
+      "event=boot source=%s ss_type=%s radio_mode=%d deeper_connected=%d "
       "force_update_ap=%d web_fs=%d reset_reason=%lu prev_stage=%lu "
       "prev_stage_name=%s prev_seq=%lu prev_min_stack=%lu",
       db_log_source_name(active_source),
+      sonar_driver_name((sonar_model_t)DB_PARAM_SONAR_TYPE),
       boot_radio_mode, deeper_connected ? 1 : 0, force_update_ap_mode ? 1 : 0,
       web_fs_available ? 1 : 0, (unsigned long)diag.reset_reason,
       (unsigned long)diag.previous_stage,

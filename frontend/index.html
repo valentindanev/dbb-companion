@@ -177,6 +177,12 @@
         <div class="sonar-cols">
           <article class="subcard">
             <div class="subhead"><div><h3>Hardwired Sonar</h3><small>UART depth sensor</small></div><label class="sw"><input id="ss_hardwired_en" name="ss_hardwired_en" type="checkbox" onchange="change_hardwired_visibility()"><i></i></label></div>
+            <div id="ss_model_div">
+              <div class="field"><label for="ss_type">Sensor model</label><select id="ss_type" name="ss_type" form="settings_form" onchange="change_sonar_model_visibility()">
+                <option value="0">DYP-L041MTW (original)</option><option value="1">AJ-SR04M / JSN-SR04T</option>
+              </select></div>
+              <div class="field" id="ss_water_mps_div" style="margin-top:12px"><label for="ss_water_mps">Speed of sound in water (m/s)</label><input type="number" name="ss_water_mps" id="ss_water_mps" min="0" max="2000"></div>
+            </div>
             <div id="sonar_gpio_div"><div class="row">
               <div class="field"><label for="ss_tx_pin">TX GPIO</label><input type="number" name="ss_tx_pin" id="ss_tx_pin" min="0" max="48"></div>
               <div class="field"><label for="ss_rx_pin">RX GPIO</label><input type="number" name="ss_rx_pin" id="ss_rx_pin" min="0" max="48"></div>

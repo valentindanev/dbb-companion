@@ -8,22 +8,28 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "sonar_driver.h"
 #include <stdio.h>
 #include <string.h>
 
 
 #define SONAR_UART_NUM UART_NUM_2
-#define SONAR_BAUD_RATE 115200
 #define BUF_SIZE 256
 #define DANEVI_SONAR_TASK_STACK_SIZE 4096
-#define DANEVI_DISTANCE_STALE_MS 3000
-#define DANEVI_ZERO_HOLD_GRACE_MS 600
 #define DANEVI_DEBUG_MAX_LINES 8
 #define DANEVI_DEBUG_LINE_MAX 160
-#define DANEVI_FRAME_SIZE 4
-#define DANEVI_TRIGGER_BYTE 0x55
-#define DANEVI_RESPONSE_TIMEOUT_MS 30
-#define DANEVI_TRIGGER_INTERVAL_MS 100
+
+/* Which transducer this boot is talking to. Selected by `ss_type` and handed
+ * in by main.c; everything below is model-agnostic. Only one model ever runs
+ * per boot - the two sensors share UART2. */
+static const sonar_driver_t *g_driver = NULL;
+
+/* Never returns NULL: before init, and if a bad model id somehow reaches us,
+ * fall back to the original transducer so behaviour matches the pre-driver
+ * firmware rather than silently doing nothing. */
+static const sonar_driver_t *danevi_driver(void) {
+  return g_driver != NULL ? g_driver : &sonar_driver_dyp_l041mtw;
+}
 
 static const char *TAG = "DANEVI_SONAR";
 
@@ -64,14 +70,14 @@ static bool danevi_get_filtered_distance_locked(uint32_t now,
   }
 
   uint32_t last_good_age_ms = now - g_distance_update_ms;
-  if (last_good_age_ms > DANEVI_DISTANCE_STALE_MS) {
+  if (last_good_age_ms > danevi_driver()->distance_stale_ms) {
     return false;
   }
 
   bool holding_last_good = false;
   if (danevi_zero_run_is_active_locked()) {
     uint32_t zero_run_age_ms = now - g_zero_run_start_ms;
-    if (zero_run_age_ms > DANEVI_ZERO_HOLD_GRACE_MS) {
+    if (zero_run_age_ms > danevi_driver()->zero_hold_grace_ms) {
       return false;
     }
     holding_last_good = true;
@@ -187,14 +193,19 @@ static void danevi_log_no_response(void) {
     return;
   }
 
-  const char *line = "No hardwired sonar response within 30 ms";
+  const sonar_driver_t *driver = danevi_driver();
+  char line[80];
+  snprintf(line, sizeof(line), "No hardwired sonar response within %lu ms",
+           (unsigned long)driver->response_timeout_ms);
   ESP_LOGW(TAG, "%s", line);
   char debug_line[DANEVI_DEBUG_LINE_MAX];
   snprintf(debug_line, sizeof(debug_line), "[%lu ms] WARN %s",
            (unsigned long)danevi_now_ms(), line);
   danevi_store_debug_line(debug_line);
-  db_sonar_log_log_hardwired_issue("no_response",
-                                   "timeout_ms=30 uart_read=0");
+  char timeout_detail[48];
+  snprintf(timeout_detail, sizeof(timeout_detail), "timeout_ms=%lu uart_read=0",
+           (unsigned long)driver->response_timeout_ms);
+  db_sonar_log_log_hardwired_issue("no_response", timeout_detail);
   g_last_no_response_log_tick = now;
 }
 
@@ -344,7 +355,7 @@ void danevi_sonar_get_debug_log(char *dst, size_t dst_size) {
              (unsigned long)(danevi_zero_run_is_active_locked()
                                  ? (now - g_zero_run_start_ms)
                                  : 0),
-             DANEVI_ZERO_HOLD_GRACE_MS);
+             (int)danevi_driver()->zero_hold_grace_ms);
     xSemaphoreGive(g_distance_mutex);
   } else {
     snprintf(dst, dst_size, "Hardwired debug buffer available, distance state unavailable.");
@@ -371,57 +382,73 @@ void danevi_sonar_get_debug_log(char *dst, size_t dst_size) {
 
 static void danevi_sonar_task(void *arg) {
   uint8_t rx_buffer[BUF_SIZE];
-  uint8_t trigger_cmd = DANEVI_TRIGGER_BYTE;
+  const sonar_driver_t *driver = danevi_driver();
+  uint8_t trigger_cmd = driver->trigger_byte;
+  int frame_size = (int)driver->frame_size;
 
-  ESP_LOGI(TAG, "Starting Hardwired Sonar Task on Core 1");
+  ESP_LOGI(TAG, "Starting Hardwired Sonar Task on Core 1 (model %s)",
+           driver->name);
 
   while (1) {
     db_sonar_log_note_hardwired_poll();
     // Clear buffer before sending trigger
     uart_flush(SONAR_UART_NUM);
 
-    // Trigger ping
-    uart_write_bytes(SONAR_UART_NUM, (const char *)&trigger_cmd, 1);
+    // Trigger ping. trigger_byte == 0 means the model free-runs and wants no
+    // prompt; we just listen for the next frame.
+    if (trigger_cmd != 0) {
+      uart_write_bytes(SONAR_UART_NUM, (const char *)&trigger_cmd, 1);
+    }
 
-    // Read the manufacturer-documented UART frame: FF Data_H Data_L SUM
-    int length = uart_read_bytes(SONAR_UART_NUM, rx_buffer, DANEVI_FRAME_SIZE,
-                                 pdMS_TO_TICKS(DANEVI_RESPONSE_TIMEOUT_MS));
+    int length = uart_read_bytes(SONAR_UART_NUM, rx_buffer, frame_size,
+                                 pdMS_TO_TICKS(driver->response_timeout_ms));
 
-    if (length == DANEVI_FRAME_SIZE && rx_buffer[0] == 0xFF) {
-      uint8_t data_h = rx_buffer[1];
-      uint8_t data_l = rx_buffer[2];
-      uint8_t chk = rx_buffer[3];
-      uint8_t sum = (uint8_t)((rx_buffer[0] + data_h + data_l) & 0xFF);
-
-      if (sum == chk) {
-        int distance = (data_h << 8) + data_l;
-        db_sonar_log_note_hardwired_frame(distance);
-        danevi_sonar_set_distance(distance);
-        danevi_log_valid_distance(rx_buffer, length, distance);
-      } else {
-        db_sonar_log_note_hardwired_bad_frame();
-        danevi_log_frame_issue("checksum mismatch", rx_buffer, length);
+    int raw_mm = -1;
+    if (length == frame_size && driver->parse(rx_buffer, length, &raw_mm)) {
+      /* A valid frame reporting 0 mm is a successful decode of "no echo" and
+       * must reach the zero-run filter as a real 0 - not as a bad frame. */
+      int distance = raw_mm;
+      if (driver->scale_mm != NULL) {
+        distance = driver->scale_mm(raw_mm);
       }
+      db_sonar_log_note_hardwired_frame(distance);
+      danevi_sonar_set_distance(distance);
+      danevi_log_valid_distance(rx_buffer, length, distance);
     } else if (length > 0) {
       db_sonar_log_note_hardwired_bad_frame();
-      danevi_log_frame_issue("misaligned frame", rx_buffer, length);
+      /* The model's parse() is the authority on validity but cannot say WHY it
+       * refused, so a full-length reject is reported as "frame rejected"
+       * (bad header or bad checksum) rather than guessing "checksum mismatch"
+       * and being wrong half the time. Short/long reads stay "misaligned". */
+      danevi_log_frame_issue(length == frame_size ? "frame rejected"
+                                                  : "misaligned frame",
+                             rx_buffer, length);
       uart_flush(SONAR_UART_NUM); // Flush misaligned data
     } else {
       db_sonar_log_note_hardwired_timeout();
       danevi_log_no_response();
     }
 
-    // 100 ms is the manufacturer-recommended trigger interval.
-    vTaskDelay(pdMS_TO_TICKS(DANEVI_TRIGGER_INTERVAL_MS));
+    vTaskDelay(pdMS_TO_TICKS(driver->trigger_interval_ms));
   }
 }
 
-void danevi_sonar_init(int tx_pin, int rx_pin) {
+void danevi_sonar_init(const sonar_driver_t *driver, int tx_pin, int rx_pin) {
+  /* A descriptor without parse() would null-deref on the first poll, and this
+   * struct is the extension point for future transducers - so refuse it here
+   * and fall back rather than crash-loop the boat on someone's next model. */
+  if (driver != NULL && driver->parse == NULL) {
+    ESP_LOGE(TAG, "Sonar model '%s' has no parse(); falling back to %s",
+             driver->name != NULL ? driver->name : "?",
+             sonar_driver_dyp_l041mtw.name);
+    driver = NULL;
+  }
+  g_driver = driver != NULL ? driver : &sonar_driver_dyp_l041mtw;
   g_distance_mutex = xSemaphoreCreateMutex();
   danevi_debug_init();
 
   uart_config_t uart_config = {
-      .baud_rate = SONAR_BAUD_RATE,
+      .baud_rate = (int)g_driver->baud_rate,
       .data_bits = UART_DATA_8_BITS,
       .parity = UART_PARITY_DISABLE,
       .stop_bits = UART_STOP_BITS_1,
@@ -438,11 +465,12 @@ void danevi_sonar_init(int tx_pin, int rx_pin) {
                           DANEVI_SONAR_TASK_STACK_SIZE, NULL, 5,
                           NULL, 1);
 
-  ESP_LOGI(TAG, "Danevi Sonar initialized on UART2, TX:%d RX:%d", tx_pin,
-           rx_pin);
+  ESP_LOGI(TAG, "Danevi Sonar initialized on UART2, model %s @%lu baud, TX:%d RX:%d",
+           g_driver->name, (unsigned long)g_driver->baud_rate, tx_pin, rx_pin);
   char debug_line[DANEVI_DEBUG_LINE_MAX];
   snprintf(debug_line, sizeof(debug_line),
-           "[%lu ms] INFO Hardwired sonar UART2 init TX:%d RX:%d",
-           (unsigned long)danevi_now_ms(), tx_pin, rx_pin);
+           "[%lu ms] INFO %s UART2 init @%lu baud TX:%d RX:%d",
+           (unsigned long)danevi_now_ms(), g_driver->display_name,
+           (unsigned long)g_driver->baud_rate, tx_pin, rx_pin);
   danevi_store_debug_line(debug_line);
 }

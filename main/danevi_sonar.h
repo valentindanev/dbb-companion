@@ -1,6 +1,8 @@
 #ifndef DANEVI_SONAR_H
 #define DANEVI_SONAR_H
 
+#include "sonar_driver.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -21,8 +23,11 @@ typedef struct {
   bool zero_filter_holding_last_good;
 } danevi_sonar_snapshot_t;
 
-// Initialize the UART for the hardwired sonar and start the FreeRTOS task
-void danevi_sonar_init(int tx_pin, int rx_pin);
+// Initialize UART2 for the hardwired sonar and start the FreeRTOS task.
+// `driver` selects the transducer model (see sonar_driver.h); NULL falls back
+// to the original DYP-L041MTW so a bad `ss_type` cannot leave the boat without
+// a sounder. Only one model runs per boot - the two share UART2.
+void danevi_sonar_init(const sonar_driver_t *driver, int tx_pin, int rx_pin);
 
 // Thread-safe getter for the latest distance
 // Returns true if data is fresh/valid, false if no new data or timed out

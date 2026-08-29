@@ -16,6 +16,9 @@ set(SRCS
         db_fc_params.c
         db_fc_tune.c
         db_netlog.c
+        sonar_driver.c
+        sonar_dyp_l041mtw.c
+        sonar_aj_sr04m.c
         db_ota_policy.c
         dbb_brain_stub.c
 )

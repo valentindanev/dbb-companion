@@ -173,19 +173,34 @@ function change_deeper_visibility() {
 	}
 }
 
+// The water-speed constant only means anything to a sensor that reports on the
+// air constant. The DYP already returns water millimetres and ignores it, so
+// showing the field there would just invite someone to "fix" a number that
+// does nothing.
+function change_sonar_model_visibility() {
+	let model_select = document.getElementById("ss_type");
+	let water_div = document.getElementById("ss_water_mps_div");
+	if (model_select == null || water_div == null) return;
+	water_div.style.display = model_select.value === "1" ? "block" : "none";
+}
+
 function change_hardwired_visibility() {
 	let hardwired_en = document.getElementById("ss_hardwired_en").checked;
 	let hardwired_active = active_sonar_source === 1;
 	let deeper_active = active_sonar_source === 2;
 	let gpio_div = document.getElementById("sonar_gpio_div");
+	let model_div = document.getElementById("ss_model_div");
 	let summary_div = document.getElementById("ss_hardwired_summary_div");
 	let debug_div = document.getElementById("ss_hardwired_debug_div");
 	if (!deeper_active && (hardwired_en || hardwired_active)) {
 		gpio_div.style.display = "block";
+		if (model_div != null) model_div.style.display = "block";
+		change_sonar_model_visibility();
 		summary_div.style.display = "block";
 		debug_div.style.display = "block";
 	} else {
 		gpio_div.style.display = "none";
+		if (model_div != null) model_div.style.display = "none";
 		summary_div.style.display = "none";
 		debug_div.style.display = "none";
 		document.getElementById("ss_hardwired_depth").innerHTML = "Hardwired sonar disabled";

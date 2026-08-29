@@ -37,7 +37,7 @@
   255 // FIRMWARE_VERSION_TYPE_OFFICIAL ->
       // https://mavlink.io/en/messages/common.html#FIRMWARE_VERSION_TYPE
 
-#define DB_PARAM_TOTAL_NUM 31 // total number of db parameters
+#define DB_PARAM_TOTAL_NUM 33 // total number of db parameters
 #define DB_PARAM_MAV_CNT                                                       \
   21 // Number of MAVLink parameters returned by ESP32 in the PARAM message.
      // Needed by GCS.
@@ -107,6 +107,8 @@
 #define DB_PARAM_HARDWIRED_EN db_param_hardwired_en.value.db_param_u8.value
 #define DB_PARAM_SONAR_TX_GPIO db_param_sonar_tx_gpio.value.db_param_u8.value
 #define DB_PARAM_SONAR_RX_GPIO db_param_sonar_rx_gpio.value.db_param_u8.value
+#define DB_PARAM_SONAR_TYPE db_param_sonar_type.value.db_param_u8.value
+#define DB_PARAM_WATER_MPS db_param_water_mps.value.db_param_u16.value
 #define DB_PARAM_DEEPER_EN db_param_deeper_en.value.db_param_u8.value
 #define DB_PARAM_DEEPER_SSID                                                   \
   (char *)db_param_deeper_ssid.value.db_param_str.value
@@ -205,6 +207,8 @@ extern db_parameter_t db_param_rssi_dbm;
 extern db_parameter_t db_param_hardwired_en;
 extern db_parameter_t db_param_sonar_tx_gpio;
 extern db_parameter_t db_param_sonar_rx_gpio;
+extern db_parameter_t db_param_sonar_type;
+extern db_parameter_t db_param_water_mps;
 extern db_parameter_t db_param_deeper_en;
 extern db_parameter_t db_param_deeper_ssid;
 extern db_parameter_t db_param_deeper_pass;
