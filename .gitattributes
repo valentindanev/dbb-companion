@@ -1,0 +1,9 @@
+# Store all text with LF in the repository, whatever the contributor's OS uses.
+# Without this, Windows checkouts can commit CRLF and a one-line edit shows up
+# as a whole-file diff (main/db_mavlink_msgs.c: 18 real lines, 892 reported).
+* text=auto eol=lf
+
+# Never line-ending-convert binary assets.
+*.png binary
+*.jpg binary
+*.ico binary
