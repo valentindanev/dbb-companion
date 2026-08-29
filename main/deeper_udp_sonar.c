@@ -362,6 +362,9 @@ static void deeper_process_sentence(const char *sentence) {
   }
 
   deeper_log_line("RX ", sentence);
+  /* Preserve the original sensor sentence separately from the normalized
+   * Deeper track records. The logger itself applies the capture gate. */
+  db_sonar_log_log_deeper_sentence(sentence);
 
   int distance_mm = -1;
   if (deeper_parse_dbt_sentence(sentence, &distance_mm)) {

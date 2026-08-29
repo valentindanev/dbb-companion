@@ -26,6 +26,8 @@
 #include <string.h>
 
 #include "db_esp32_control.h"
+#include "db_netlog.h"
+#include "db_sonar_log.h"
 #include "db_protocol.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -38,6 +40,7 @@
 #include "esp_wifi_default.h"
 #include "esp_wifi_types.h"
 #include "freertos/event_groups.h"
+#include "freertos/timers.h"
 #include "http_server.h"
 #include "dbb_brain.h"
 #include "main.h"
@@ -130,6 +133,13 @@ db_sonar_source_t DB_ACTIVE_SONAR_SOURCE = DB_SONAR_SOURCE_NONE;
 
 // Wi-Fi client mode vars
 static int s_retry_num = 0;
+/* Set once the STA link has actually worked. After that the access point is
+ * known to exist, so giving up on it permanently is never the right answer -
+ * see db_sta_reconnect_timer_cb(). */
+static bool s_sta_ever_connected = false;
+static TimerHandle_t s_sta_reconnect_timer = NULL;
+#define DB_STA_FAST_RETRIES 15
+#define DB_STA_SLOW_RETRY_MS 5000
 static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT BIT1
@@ -463,6 +473,26 @@ static void set_client_static_ip() {
  * @param event_id
  * @param event_data
  */
+/**
+ * Re-arm the STA connect burst after a pause.
+ *
+ * Before this existed, a mid-session disconnect burned the 15 fast retries
+ * and then set WIFI_FAIL_BIT - which nothing waits on after boot, because the
+ * only xEventGroupWaitBits() for it is in the boot-time connect path and has
+ * long since returned. s_retry_num is cleared only on IP_EVENT_STA_GOT_IP, so
+ * once it reached 15 without a success esp_wifi_connect() was never called
+ * again for the rest of the boot. On 22-08-2026 that turned a momentary drop
+ * of the Deeper sonar's AP into a dead sonar for the remaining 8.5 minutes of
+ * the session, recoverable only by a power cycle.
+ */
+static void db_sta_reconnect_timer_cb(TimerHandle_t timer) {
+  (void)timer;
+  if (DB_RADIO_IS_OFF) return;
+  s_retry_num = 0;
+  db_netlog_note("event=wifi_sta_retry_burst");
+  ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_connect());
+}
+
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data) {
   // Wifi access point mode events
@@ -471,6 +501,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         (wifi_event_ap_staconnected_t *)event_data;
     ESP_LOGI(TAG, "WIFI_EVENT - Client connected - station:" MACSTR ", AID=%d",
              MAC2STR(event->mac), event->aid);
+    db_netlog_note("event=wifi_ap_client_connect mac=" MACSTR " aid=%d",
+                   MAC2STR(event->mac), event->aid);
     db_refresh_ap_sta_list_if_available(); // update list of connected stations
   } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
     wifi_event_ap_stadisconnected_t *event =
@@ -478,6 +510,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     ESP_LOGI(TAG,
              "WIFI_EVENT - Client disconnected - station:" MACSTR ", AID=%d",
              MAC2STR(event->mac), event->aid);
+    db_netlog_note("event=wifi_ap_client_disconnect mac=" MACSTR " aid=%d",
+                   MAC2STR(event->mac), event->aid);
     struct db_udp_client_t db_udp_client;
     memcpy(db_udp_client.mac, event->mac, sizeof(db_udp_client.mac));
     remove_from_known_udp_clients(udp_conn_list, db_udp_client);
@@ -512,6 +546,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                     "(WIFI_EVENT_STA_START)");
     }
   } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+    db_netlog_note("event=wifi_sta_connect retries=%d", s_retry_num);
     set_client_static_ip();
   } else if (event_base == WIFI_EVENT &&
              event_id == WIFI_EVENT_STA_DISCONNECTED) {
@@ -521,6 +556,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
              "WIFI_EVENT_STA_DISCONNECTED - Lost connection to access point "
              "(reason: %d)",
              event->reason);
+    db_netlog_note("event=wifi_sta_disconnect reason=%d retries=%d ever_up=%d",
+                   event->reason, s_retry_num, s_sta_ever_connected ? 1 : 0);
     // Keep on trying
     if (!DB_RADIO_IS_OFF) {
       if (s_sta_retry_uses_deadline) {
@@ -536,12 +573,20 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                    (unsigned long)s_sta_retry_window_ms);
           xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
         }
-      } else if (s_retry_num < 15) {
+      } else if (s_retry_num < DB_STA_FAST_RETRIES) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_connect());
         s_retry_num++;
         ESP_LOGI(TAG, "Retry to connect to the AP (%i)", s_retry_num);
+      } else if (s_sta_ever_connected && s_sta_reconnect_timer != NULL) {
+        /* The link worked once, so the AP is real - keep trying forever at a
+         * slow cadence rather than falling back. A towed sonar a metre from
+         * the antenna must never need a power cycle to come back. */
+        ESP_LOGW(TAG, "STA burst exhausted; retrying again in %d ms",
+                 DB_STA_SLOW_RETRY_MS);
+        xTimerStart(s_sta_reconnect_timer, 0);
       } else {
         ESP_LOGW(TAG, "Max retries reached. Triggering fall-back!");
+        db_netlog_note("event=wifi_sta_giveup retries=%d", s_retry_num);
         xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
       }
     } else {
@@ -552,6 +597,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
     ESP_LOGI(TAG, "IP_EVENT_STA_GOT_IP:" IPSTR, IP2STR(&event->ip_info.ip));
     sprintf(CURRENT_CLIENT_IP, IPSTR, IP2STR(&event->ip_info.ip));
+    db_netlog_note("event=wifi_sta_got_ip ip=" IPSTR, IP2STR(&event->ip_info.ip));
+    s_sta_ever_connected = true;
+    if (s_sta_reconnect_timer != NULL) xTimerStop(s_sta_reconnect_timer, 0);
     s_retry_num = 0;
     db_reset_sta_retry_window();
     xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
@@ -740,6 +788,12 @@ void db_init_wifi_apmode(int wifi_mode) {
  * access point.
  */
 int db_init_wifi_clientmode(uint32_t connect_window_ms) {
+  if (s_sta_reconnect_timer == NULL) {
+    s_sta_reconnect_timer = xTimerCreate("STA_Reconnect",
+                                         pdMS_TO_TICKS(DB_STA_SLOW_RETRY_MS),
+                                         pdFALSE, NULL,
+                                         db_sta_reconnect_timer_cb);
+  }
   db_cleanup_wifi_runtime();
   s_wifi_event_group = xEventGroupCreate();
   db_configure_sta_retry_window(connect_window_ms);
@@ -1144,6 +1198,15 @@ void app_main() {
 #endif
   s_deeper_sta_session_active = false;
 
+  /* MUST run before any db_init_wifi_*() below. db_netlog_note() returns at
+   * its first line while the queue is NULL, and the STA connect/disconnect
+   * events that matter most are raised during Wi-Fi bring-up. Found dead
+   * 23-08-2026: the feature shipped in v1.7 with no call site anywhere, so a
+   * recovered 5.8 MB log image held zero event=wifi_* lines - while
+   * event=heap kept working, because db_netlog_tick() emits it OUTSIDE the
+   * queue guard, which is exactly what masked the fault. */
+  db_netlog_init();
+
   db_param_init_parameters();
   udp_conn_list =
       udp_client_list_create(); // http server functions and
@@ -1303,36 +1366,29 @@ void app_main() {
     ESP_LOGW(TAG, "Web filesystem is unavailable. Continuing with the embedded "
                   "OTA recovery page so a pinned bundle can be staged.");
   }
-  // Temporary stability hotfix:
-  // keep the persistent log path disabled while the ESP is booted into the
-  // Deeper STA session, so we can separate Deeper-mode regressions from the
-  // newer flash-backed logging feature.
-  bool enable_persistent_sonar_log = !deeper_sta_connected;
+  // The 2026-08 "disable logging on a Deeper STA boot" stability hotfix is
+  // retired (owner decision 20-08-2026): its isolation purpose predates the
+  // separated logging rework, and it made the required LOGS health bit fail
+  // on any Deeper STA boot while deeper_udp_sonar's deferred init remounted
+  // the filesystem seconds later anyway. Logging now initializes on every
+  // boot; the deferred init in deeper_udp_sonar.c remains as a plain retry.
 #if CONFIG_DB_LOG_STORAGE_FATFS
   ota_health_required |= DB_OTA_HEALTH_LOGS;
 #endif
-  if (enable_persistent_sonar_log) {
-    if (db_sonar_log_init() == ESP_OK) {
+  if (db_sonar_log_init() == ESP_OK) {
 #if CONFIG_DB_LOG_STORAGE_FATFS
-      ota_health_passed |= DB_OTA_HEALTH_LOGS;
+    ota_health_passed |= DB_OTA_HEALTH_LOGS;
 #endif
-    } else {
-#if CONFIG_DB_LOG_STORAGE_FATFS
-      ota_health_failed |= DB_OTA_HEALTH_LOGS;
-#endif
-      ESP_LOGW(TAG, "Persistent sonar log filesystem is unavailable. "
-                    "Continuing without downloadable rolling logs.");
-    }
-    db_sonar_log_log_boot(DB_ACTIVE_SONAR_SOURCE, boot_radio_mode,
-                          deeper_sta_connected, force_update_ap_mode,
-                          db_is_web_fs_available());
   } else {
 #if CONFIG_DB_LOG_STORAGE_FATFS
     ota_health_failed |= DB_OTA_HEALTH_LOGS;
 #endif
-    ESP_LOGW(TAG, "Persistent sonar log temporarily disabled for this Deeper "
-                  "STA boot while the stability hotfix is active.");
+    ESP_LOGW(TAG, "Persistent sonar log filesystem is unavailable. "
+                  "Continuing without downloadable rolling logs.");
   }
+  db_sonar_log_log_boot(DB_ACTIVE_SONAR_SOURCE, boot_radio_mode,
+                        deeper_sta_connected, force_update_ap_mode,
+                        db_is_web_fs_available());
   /*
    * Flight-controller flashing over USB OTG. Started unconditionally and after
    * the sonar log, because it stores its image in the same /logs FAT mount -

@@ -34,11 +34,32 @@ def build(source_root: Path, output_root: Path) -> None:
     if output_root == source_root or source_root not in output_root.parents:
         raise ValueError("output must be a child of the frontend source directory")
 
-    html_path = source_root / "index.html"
-    if not html_path.is_file():
+    pages = sorted(source_root.glob("*.html"))
+    if not any(page.name == "index.html" for page in pages):
         raise FileNotFoundError("frontend index.html not found")
-    html = html_path.read_text(encoding="utf-8")
 
+    built: dict[str, str] = {}
+    for page in pages:
+        built[page.name] = inline_page(source_root, page)
+
+    if output_root.exists():
+        shutil.rmtree(output_root)
+    output_root.mkdir(parents=True)
+    for name, text in built.items():
+        (output_root / name).write_text(text, encoding="utf-8", newline="\n")
+    for pattern in ("*.png", "*.ico"):
+        for asset in sorted(source_root.glob(pattern), key=lambda item: item.name):
+            shutil.copyfile(asset, output_root / asset.name)
+
+
+def inline_page(source_root: Path, html_path: Path) -> str:
+    """Inline every <link inline>/<script inline> in one page.
+
+    Every page is self-contained: the ESP serves each asset independently and
+    there is no shared cache to rely on, so a page that referenced an external
+    stylesheet would render unstyled.
+    """
+    html = html_path.read_text(encoding="utf-8")
     link_count = 0
     script_count = 0
 
@@ -56,18 +77,14 @@ def build(source_root: Path, output_root: Path) -> None:
 
     html = LINK_PATTERN.sub(inline_css, html)
     html = SCRIPT_PATTERN.sub(inline_js, html)
-    if link_count != 1 or script_count != 2 or REMAINING_INLINE.search(html):
+    # Counts are page-specific now, so assert the invariant that actually matters
+    # - nothing left unresolved - rather than fixed per-page totals.
+    if link_count < 1 or script_count < 1 or REMAINING_INLINE.search(html):
         raise ValueError(
-            f"unexpected inline asset set: css={link_count}, js={script_count}"
+            f"{html_path.name}: unresolved inline assets "
+            f"(css={link_count}, js={script_count})"
         )
-
-    if output_root.exists():
-        shutil.rmtree(output_root)
-    output_root.mkdir(parents=True)
-    (output_root / "index.html").write_text(html, encoding="utf-8", newline="\n")
-    for pattern in ("*.png", "*.ico"):
-        for asset in sorted(source_root.glob(pattern), key=lambda item: item.name):
-            shutil.copyfile(asset, output_root / asset.name)
+    return html
 
 
 def main() -> int:

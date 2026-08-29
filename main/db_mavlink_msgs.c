@@ -26,6 +26,8 @@
 #include "db_parameters.h"
 #include "db_serial.h"
 #include "db_sonar_log.h"
+#include "db_fc_params.h"
+#include "db_fc_tune.h"
 #include "globals.h"
 #include "main.h"
 #include "dbb_brain.h"
@@ -835,6 +837,22 @@ void handle_mavlink_message(fmav_message_t *new_msg, int *tcp_clients, udp_conn_
             }
         }
             break;
+        case FASTMAVLINK_MSG_ID_PARAM_VALUE: {
+            /* A PARAM_VALUE from the FC is the answer to a dump or the echo of a
+             * load write. Feed the collector; it ignores anything it did not ask
+             * for. Falls through to normal routing so a GCS still sees it. */
+            if (origin == DB_MAVLINK_DATA_ORIGIN_SERIAL) {
+                fmav_param_value_t pv;
+                fmav_msg_param_value_decode(&pv, new_msg);
+                char id[DB_FC_PARAM_ID_LEN + 1];
+                memset(id, 0, sizeof(id));
+                memcpy(id, pv.param_id, DB_FC_PARAM_ID_LEN);
+                db_fc_params_on_param_value(id, pv.param_value, pv.param_type,
+                                            pv.param_index, pv.param_count);
+                db_fc_tune_on_param_value(id, pv.param_value, pv.param_type);
+            }
+            break;
+        }
         case FASTMAVLINK_MSG_ID_PARAM_SET: {
             fmav_param_set_t parame_set_payload;
             fmav_msg_param_set_decode(&parame_set_payload, new_msg);

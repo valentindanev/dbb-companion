@@ -13,6 +13,9 @@ set(SRCS
         db_diag.c
         db_location_store.c
         db_fc_flash.c
+        db_fc_params.c
+        db_fc_tune.c
+        db_netlog.c
         db_ota_policy.c
         dbb_brain_stub.c
 )

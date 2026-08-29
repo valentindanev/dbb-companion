@@ -40,6 +40,8 @@
 #include "cJSON.h"
 #include "db_diag.h"
 #include "db_fc_flash.h"
+#include "db_fc_params.h"
+#include "db_fc_tune.h"
 #include "db_location_store.h"
 #include "db_ota_policy.h"
 #include "db_sonar_log.h"
@@ -1024,156 +1026,398 @@ static esp_err_t fcflash_delete_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
-static const char DB_FCFLASH_PAGE[] =
-"<!doctype html><html><head><meta charset='utf-8'>"
-"<meta name='viewport' content='width=device-width,initial-scale=1'>"
-"<title>DBB - Flight Controller Firmware</title><style>"
-"body{background:#12151a;color:#d8dee9;font-family:system-ui,sans-serif;margin:0;padding:16px}"
-"h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;margin:18px 0 6px;color:#88c0d0}"
-"a{color:#88c0d0}.sub{color:#7b8494;font-size:13px;margin-bottom:14px}"
-".card{background:#1b1f27;border:1px solid #2a303b;border-radius:8px;padding:12px;margin-bottom:14px}"
-"button{background:#3b4252;color:#eceff4;border:1px solid #4c566a;border-radius:6px;"
-"padding:9px 16px;font-size:14px;cursor:pointer;margin-right:8px}"
-"button:disabled{opacity:.4;cursor:not-allowed}"
-"button.go{background:#5e8145;border-color:#6a9150}button.danger{background:#7b3b3b;border-color:#9a4a4a}"
-/* Scales with the window and can be dragged taller. resize:vertical needs a
- * non-visible overflow to get a grab handle, which overflow-y:auto provides. */
-"#console{background:#0b0d11;border:1px solid #2a303b;border-radius:6px;padding:10px;"
-"height:45vh;min-height:160px;max-height:80vh;resize:vertical;overflow-y:auto;"
-"white-space:pre-wrap;font-family:ui-monospace,monospace;"
-"font-size:12px;line-height:1.45}"
-"table{border-collapse:collapse;font-size:13px}td{padding:2px 14px 2px 0}"
-".k{color:#7b8494}.warn{color:#ebcb8b}.err{color:#bf616a}.ok{color:#a3be8c}"
-/* Browser-side console lines. They are drawn immediately while boat-side lines
- * only arrive on the next poll, so without a visible distinction the two
- * interleave and read as out of order - misleading exactly when something has
- * gone wrong. Dimmed and prefixed, so the reader can tell who is speaking. */
-".pc{color:#6f7787}"
-"progress{width:100%;height:16px}</style></head><body>"
-"<h1>Flight Controller Firmware</h1>"
-"<div class='sub'>Flashes the FC over USB OTG from the boat. "
-"<a href='/'>&larr; dashboard</a></div>"
 
-"<div class='card'><h2>1 &middot; Stored firmware</h2>"
-"<table><tr><td class='k'>File</td><td id='iname'>&mdash;</td></tr>"
-"<tr><td class='k'>Size</td><td id='isize'>&mdash;</td></tr>"
-"<tr><td class='k'>Board ID</td><td id='ibid'>&mdash;</td></tr>"
-"<tr><td class='k'>CRC</td><td id='icrc'>&mdash;</td></tr></table>"
-"<p><input type='file' id='file' accept='.apj,.bin'> "
-"<button id='up'>Upload</button><button id='del' class='danger'>Delete</button></p>"
-"<p><progress id='uprog' value='0' max='100'></progress></p>"
-"<div id='upmsg' class='sub'></div></div>"
+/* ------------------------------------------------------------------ FC params */
 
-"<div class='card'><h2>2 &middot; Flight controller</h2>"
-"<table><tr><td class='k'>State</td><td id='state'>&mdash;</td></tr>"
-"<tr><td class='k'>Board ID</td><td id='fbid'>&mdash;</td></tr>"
-"<tr><td class='k'>Armed</td><td id='armed'>&mdash;</td></tr></table>"
-"<p><progress id='prog' value='0' max='100'></progress></p>"
-"<p><button id='flash' class='go' disabled>Flash the flight controller</button></p>"
-"<div id='gate' class='sub'></div></div>"
+static const char *fcparams_state_name(db_fc_param_state_t st) {
+    switch (st) {
+    case DB_FC_PARAM_DUMPING:  return "dumping";
+    case DB_FC_PARAM_LOADING:  return "loading";
+    case DB_FC_PARAM_COMPLETE: return "complete";
+    case DB_FC_PARAM_FAILED:   return "failed";
+    default:                   return "idle";
+    }
+}
 
-"<div class='card'><h2>3 &middot; Console</h2><div id='console'></div></div>"
+static esp_err_t fcparams_dump_post_handler(httpd_req_t *req) {
+    esp_err_t err = db_fc_params_start_dump();
+    if (err == ESP_ERR_INVALID_STATE) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "a parameter job is already running");
+        return ESP_FAIL;
+    }
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "could not start the dump");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
 
-"<script>\n"
-"var seq=0;\n"
-"function $(i){return document.getElementById(i)}\n"
-"function hex(n){return '0x'+(n>>>0).toString(16).toUpperCase().padStart(8,'0')}\n"
-"function say(m,c){var d=$('console');var s=document.createElement('div');"
-"if(c)s.className=c;s.textContent=m;d.appendChild(s);d.scrollTop=d.scrollHeight}\n"
-/* pc() = this browser said it. say() with no class = the boat said it. */
-"function pc(m,c){say('\\u00bb '+m,c||'pc')}\n"
+static esp_err_t fcparams_status_get_handler(httpd_req_t *req) {
+    db_fc_params_status_t st;
+    db_fc_params_get_status(&st);
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
+        return ESP_FAIL;
+    }
+    cJSON_AddStringToObject(root, "state", fcparams_state_name(st.state));
+    cJSON_AddNumberToObject(root, "received", st.received);
+    cJSON_AddNumberToObject(root, "total", st.total);
+    cJSON_AddNumberToObject(root, "written", st.written);
+    if (st.error[0] != '\0') cJSON_AddStringToObject(root, "error", st.error);
+    if (st.failed) {
+        char names[512];
+        db_fc_params_failed_list(names, sizeof(names));
+        cJSON *arr = cJSON_AddArrayToObject(root, "failed");
+        if (arr != NULL) {
+            char *save = NULL;
+            for (char *tok = strtok_r(names, "\n", &save); tok != NULL;
+                 tok = strtok_r(NULL, "\n", &save)) {
+                cJSON_AddItemToArray(arr, cJSON_CreateString(tok));
+            }
+        }
+    }
+    char *out = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    db_http_resp_sendstr_with_retry(req, out);
+    free(out);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
 
-/* Decode an ArduPilot .apj entirely in the browser: base64 then raw zlib via
- * the platform's DecompressionStream. Keeps zlib and a 1.3 MB decode buffer out
- * of the firmware. A .bin is passed straight through. */
-"async function decode(f){\n"
-" if(!f.name.toLowerCase().endsWith('.apj')){\n"
-"  var b=new Uint8Array(await f.arrayBuffer());\n"
-"  return {bin:b,board_id:0,name:f.name};}\n"
-" var j=JSON.parse(await f.text());\n"
-" var raw=Uint8Array.from(atob(j.image),function(c){return c.charCodeAt(0)});\n"
-" if(typeof DecompressionStream==='undefined')\n"
-"  throw new Error('This browser cannot decompress .apj. Use a current Chrome/Firefox/Safari.');\n"
-" var st=new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate'));\n"
-" var buf=await new Response(st).arrayBuffer();\n"
-" return {bin:new Uint8Array(buf),board_id:j.board_id||0,name:f.name};}\n"
+static esp_err_t fcparams_file_get_handler(httpd_req_t *req) {
+    /* Serves the STORED backup, not the RAM copy: it survives a reboot and is
+     * byte-for-byte what the restore path would replay to the FC. */
+    bool present = false;
+    db_fc_params_stored_info(&present, NULL, NULL);
+    if (!present) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND,
+                            "no parameter backup stored on the boat");
+        return ESP_FAIL;
+    }
+    /* Streamed here rather than through db_http_send_file_with_type(): that
+     * helper only exists in the non-embedded web build, and this is a data file
+     * on the log mount, not a web asset. */
+    FILE *f = fopen(DB_FC_PARAM_FILE_PATH, "r");
+    if (f == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "could not open the stored backup");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_set_hdr(req, "Content-Disposition",
+                       "attachment; filename=\"fc-parameters.param\"");
+    char chunk[512];
+    size_t n;
+    while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0) {
+        if (httpd_resp_send_chunk(req, chunk, n) != ESP_OK) {
+            fclose(f);
+            return ESP_FAIL;
+        }
+    }
+    fclose(f);
+    return httpd_resp_send_chunk(req, NULL, 0);
+}
 
-/* XMLHttpRequest, not fetch: fetch cannot report UPLOAD progress at all, and a
- * 1.2 MB post over the boat's Wi-Fi otherwise looks frozen for many seconds. */
-"function send(bin,bid,name){return new Promise(function(res,rej){\n"
-" var x=new XMLHttpRequest(),last=-1;\n"
-" x.open('POST','/api/fcflash/upload?board_id='+bid+'&name='+encodeURIComponent(name));\n"
-" x.upload.onprogress=function(e){\n"
-"  if(!e.lengthComputable)return;\n"
-"  var p=100*e.loaded/e.total;$('uprog').value=p;\n"
-"  $('upmsg').textContent='Uploading '+(e.loaded>>10)+' / '+(e.total>>10)+' KiB ('+p.toFixed(0)+'%)';\n"
-"  var q=Math.floor(p/10)*10;if(q>last){last=q;pc('upload '+q+'%');}};\n"
-" x.onload=function(){if(x.status>=200&&x.status<300){try{res(JSON.parse(x.responseText))}\n"
-"  catch(e){rej(new Error('bad reply from the boat'))}}else rej(new Error(x.responseText||('HTTP '+x.status)));};\n"
-" x.onerror=function(){rej(new Error('network error - did the Wi-Fi drop?'))};\n"
-" x.send(bin);});}\n"
+static esp_err_t fcparams_stored_get_handler(httpd_req_t *req) {
+    bool present = false;
+    size_t bytes = 0;
+    uint16_t count = 0;
+    db_fc_params_stored_info(&present, &bytes, &count);
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
+        return ESP_FAIL;
+    }
+    cJSON_AddBoolToObject(root, "present", present);
+    cJSON_AddNumberToObject(root, "bytes", bytes);
+    cJSON_AddNumberToObject(root, "count", count);
+    char *out = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    db_http_resp_sendstr_with_retry(req, out);
+    free(out);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
 
-"$('up').onclick=async function(){\n"
-" var f=$('file').files[0];\n"
-" if(!f){$('upmsg').textContent='Choose a .apj first.';return}\n"
-" $('up').disabled=true;$('uprog').value=0;\n"
-" $('upmsg').textContent='Decoding '+f.name+' ...';pc('decoding '+f.name);\n"
-" try{\n"
-"  var d=await decode(f);\n"
-"  if(!d.board_id){throw new Error('No board_id in that file - refusing an image we cannot verify against the FC.');}\n"
-"  pc('decoded '+d.bin.length+' bytes, board '+d.board_id);\n"
-"  var j=await send(d.bin,d.board_id,d.name);\n"
-"  $('uprog').value=100;\n"
-"  $('upmsg').textContent='Stored. CRC '+hex(j.crc)+' (computed on the boat).';\n"
-/* Deliberately does NOT restate size/board/CRC - the boat logs that itself a
- * moment later, and printing both made it look like it happened twice. */
-"  pc('upload complete, waiting for the boat to verify');\n"
-" }catch(e){$('upmsg').textContent='Failed: '+e.message;pc('upload failed: '+e.message,'err');}\n"
-" $('up').disabled=false;};\n"
+static esp_err_t fcparams_stored_delete_handler(httpd_req_t *req) {
+    db_fc_params_delete_stored();
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
 
-"$('del').onclick=async function(){\n"
-" if(!confirm('Delete the stored firmware from the boat?'))return;\n"
-" await fetch('/api/fcflash/image',{method:'DELETE'});};\n"
+/* The recovery path: dump -> reflash the FC -> restore, all boat-side. */
+static esp_err_t fcparams_restore_post_handler(httpd_req_t *req) {
+    esp_err_t err = db_fc_params_start_load_from_stored();
+    if (err == ESP_ERR_NOT_FOUND) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND,
+                            "no parameter backup stored on the boat");
+        return ESP_FAIL;
+    }
+    if (err == ESP_ERR_INVALID_STATE) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "a parameter job is already running");
+        return ESP_FAIL;
+    }
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "could not read the stored backup");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
 
-"$('flash').onclick=async function(){\n"
-" if(!confirm('This ERASES the flight controller and writes new firmware.\\n\\n"
-"Do not cut power until it finishes. Continue?'))return;\n"
-" $('flash').disabled=true;\n"
-" var r=await fetch('/api/fcflash/start',{method:'POST'});\n"
-" if(!r.ok)pc('refused: '+await r.text(),'err');};\n"
+/* Body: {"params":[{"id":"NAME","value":1.23}, ...]} */
+static esp_err_t fcparams_load_post_handler(httpd_req_t *req) {
+    int total = req->content_len;
+    if (total <= 0 || total > 192 * 1024) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "unreasonable body size");
+        return ESP_FAIL;
+    }
+    char *body = malloc((size_t)total + 1);
+    if (body == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
+        return ESP_FAIL;
+    }
+    int got = 0;
+    while (got < total) {
+        int n = httpd_req_recv(req, body + got, (size_t)(total - got));
+        if (n <= 0) {
+            free(body);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "upload interrupted");
+            return ESP_FAIL;
+        }
+        got += n;
+    }
+    body[total] = '\0';
 
-"async function poll(){\n"
-" try{\n"
-"  var r=await fetch('/api/fcflash/status?since='+seq);var s=await r.json();\n"
-"  if(s.console){s.console.split('\\n').forEach(function(l){if(l)say(l)});}\n"
-"  seq=s.next_seq;\n"
-"  $('state').textContent=s.state;\n"
-"  $('fbid').textContent=s.board_id?s.board_id:'\\u2014';\n"
-"  $('armed').innerHTML=s.armed?'<span class=err>ARMED</span>':'<span class=ok>disarmed</span>';\n"
-"  $('iname').textContent=s.image_present?s.image_name:'\\u2014';\n"
-"  $('isize').textContent=s.image_present?s.image_size+' bytes':'\\u2014';\n"
-"  $('ibid').textContent=s.image_present?s.image_board_id:'\\u2014';\n"
-"  $('icrc').textContent=s.image_present?hex(s.image_crc):'\\u2014';\n"
-"  if(s.bytes_total)$('prog').value=100*s.bytes_done/s.bytes_total;\n"
-"  var busy=['waiting_for_fc','rebooting','erasing','programming','verifying'].indexOf(s.state)>=0;\n"
-"  var why='';\n"
-"  if(s.armed)why='Blocked: the vehicle is armed.';\n"
-"  else if(!s.image_present)why='Upload a firmware image first.';\n"
-"  else if(busy)why='Busy \\u2014 flashing in progress.';\n"
-"  else if(s.board_id&&s.image_present&&s.board_id!=s.image_board_id)\n"
-"   why='Blocked: FC board '+s.board_id+' does not match the image ('+s.image_board_id+').';\n"
-"  $('gate').textContent=why;\n"
-"  $('flash').disabled=!!why;\n"
-"  if(s.state==='failed'&&s.error)$('gate').innerHTML=\"<span class='err'>\"+s.error+\"</span>\";\n"
-" }catch(e){}\n"
-" setTimeout(poll,500);}\n"
-"poll();\n"
-"</script></body></html>";
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (root == NULL) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body is not valid JSON");
+        return ESP_FAIL;
+    }
+    cJSON *arr = cJSON_GetObjectItem(root, "params");
+    int count = cJSON_IsArray(arr) ? cJSON_GetArraySize(arr) : 0;
+    if (count <= 0 || count > DB_FC_PARAM_MAX) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no usable parameters in the body");
+        return ESP_FAIL;
+    }
+    db_fc_param_entry_t *list = calloc((size_t)count, sizeof(*list));
+    if (list == NULL) {
+        cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
+        return ESP_FAIL;
+    }
+    int n = 0;
+    for (int i = 0; i < count; ++i) {
+        cJSON *item = cJSON_GetArrayItem(arr, i);
+        cJSON *id = cJSON_GetObjectItem(item, "id");
+        cJSON *value = cJSON_GetObjectItem(item, "value");
+        if (!cJSON_IsString(id) || !cJSON_IsNumber(value)) continue;
+        strncpy(list[n].id, id->valuestring, DB_FC_PARAM_ID_LEN);
+        list[n].id[DB_FC_PARAM_ID_LEN] = '\0';
+        list[n].value = (float)value->valuedouble;
+        list[n].type = MAV_PARAM_TYPE_REAL32;
+        n++;
+    }
+    cJSON_Delete(root);
+    if (n == 0) {
+        free(list);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no usable parameters in the body");
+        return ESP_FAIL;
+    }
+    /* An uploaded file is written to the FC and NOTHING ELSE. It used to also
+     * replace the stored backup, which destroyed the way back this feature
+     * exists to provide: dump good parameters, upload an experimental tune, and
+     * the known-good copy was silently gone. The backup now changes only when
+     * you deliberately Dump. (Owner decision, 22-08-2026.) */
+    esp_err_t err = db_fc_params_start_load(list, (uint16_t)n);
+    free(list);
+    if (err == ESP_ERR_INVALID_STATE) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "a parameter job is already running");
+        return ESP_FAIL;
+    }
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "could not start the load");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
+/* =====================================================================
+ * /api/fctune - on-boat steering and speed tuning (db_fc_tune.c).
+ *
+ * Status and console are fetched together, exactly like /api/fcflash/status:
+ * one poll returns state, progress, live sensor values and any new console
+ * lines, so the page needs a single timer and the ring's sequence number
+ * survives a Wi-Fi blip without losing or duplicating output.
+ * ===================================================================== */
+
+static const char *fctune_state_name(db_fc_tune_state_t s) {
+    switch (s) {
+    case DB_FC_TUNE_IDLE:      return "idle";
+    case DB_FC_TUNE_BASELINE:  return "baseline";
+    case DB_FC_TUNE_STEERING:  return "steering";
+    case DB_FC_TUNE_SPEED:     return "speed";
+    case DB_FC_TUNE_READY:     return "ready";
+    case DB_FC_TUNE_WRITING:   return "writing";
+    case DB_FC_TUNE_COMPLETE:  return "complete";
+    case DB_FC_TUNE_FAILED:    return "failed";
+    }
+    return "unknown";
+}
+
+static esp_err_t fctune_status_get_handler(httpd_req_t *req) {
+    uint32_t since = 0;
+    char q[64];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK) {
+        char v[16];
+        if (httpd_query_key_value(q, "since", v, sizeof(v)) == ESP_OK) {
+            since = (uint32_t)strtoul(v, NULL, 10);
+        }
+    }
+    db_fc_tune_status_t st;
+    db_fc_tune_get_status(&st);
+
+    /* Heap, not stack: this handler's stack is shared with the large locals in
+     * db_mavlink_get_telemetry(), same reason as the fcflash console. */
+    const size_t console_max = 4096;
+    char *console = malloc(console_max);
+    uint32_t next_seq = since;
+    if (console) {
+        console[0] = '\0';
+        db_fc_tune_console_read(since, console, console_max, &next_seq);
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) {
+        free(console);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
+        return ESP_FAIL;
+    }
+    cJSON_AddStringToObject(root, "state", fctune_state_name(st.state));
+    cJSON_AddNumberToObject(root, "axes", st.axes);
+    cJSON_AddNumberToObject(root, "steer_pct", st.steer_pct);
+    cJSON_AddNumberToObject(root, "speed_pct", st.speed_pct);
+    cJSON_AddNumberToObject(root, "steer_samples", st.steer_samples);
+    cJSON_AddNumberToObject(root, "speed_samples", st.speed_samples);
+    cJSON_AddNumberToObject(root, "rotation_deg", st.steer_rotation_deg);
+    cJSON_AddBoolToObject(root, "armed", db_fc_flash_vehicle_is_armed());
+    cJSON_AddBoolToObject(root, "live_valid", st.live_valid);
+    cJSON_AddNumberToObject(root, "live_steering", st.live_steering);
+    cJSON_AddNumberToObject(root, "live_turnrate", st.live_turnrate_dps);
+    cJSON_AddNumberToObject(root, "live_throttle", st.live_throttle);
+    cJSON_AddNumberToObject(root, "live_speed", st.live_speed_mps);
+    if (st.error[0] != '\0') cJSON_AddStringToObject(root, "error", st.error);
+    cJSON *arr = cJSON_AddArrayToObject(root, "results");
+    if (arr != NULL) {
+        for (uint8_t i = 0; i < st.result_count; i++) {
+            cJSON *r = cJSON_CreateObject();
+            if (r == NULL) break;
+            cJSON_AddStringToObject(r, "id", st.results[i].id);
+            cJSON_AddNumberToObject(r, "before", st.results[i].before);
+            cJSON_AddNumberToObject(r, "after", st.results[i].after);
+            cJSON_AddBoolToObject(r, "applied", st.results[i].applied);
+            cJSON_AddItemToArray(arr, r);
+        }
+    }
+    cJSON_AddStringToObject(root, "console", console ? console : "");
+    cJSON_AddNumberToObject(root, "seq", next_seq);
+    char *out = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    db_http_resp_sendstr_with_retry(req, out);
+    free(out);
+    free(console);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+/* Body is optional: {"axes":1|2|3}. Absent means both axes. */
+static esp_err_t fctune_start_post_handler(httpd_req_t *req) {
+    uint8_t axes = 0;
+    int total = req->content_len;
+    if (total > 0 && total < 128) {
+        char body[128];
+        int got = 0;
+        while (got < total) {
+            int n = httpd_req_recv(req, body + got, (size_t)(total - got));
+            if (n <= 0) break;
+            got += n;
+        }
+        body[got > 0 ? got : 0] = '\0';
+        cJSON *root = cJSON_Parse(body);
+        if (root) {
+            cJSON *a = cJSON_GetObjectItem(root, "axes");
+            if (cJSON_IsNumber(a)) axes = (uint8_t)a->valueint;
+            cJSON_Delete(root);
+        }
+    }
+    esp_err_t err = db_fc_tune_start(axes);
+    if (err == ESP_ERR_INVALID_STATE) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "a tune or parameter job is already running");
+        return ESP_FAIL;
+    }
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "could not start");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
+static esp_err_t fctune_apply_post_handler(httpd_req_t *req) {
+    esp_err_t err = db_fc_tune_apply();
+    if (err == ESP_ERR_INVALID_STATE) {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_sendstr(req, "no computed tune is waiting to be applied");
+        return ESP_FAIL;
+    }
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "could not start the parameter write");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
+static esp_err_t fctune_abort_post_handler(httpd_req_t *req) {
+    db_fc_tune_abort("web UI");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
 
 static esp_err_t fcflash_page_handler(httpd_req_t *req)
 {
-    httpd_resp_set_type(req, "text/html");
-    return httpd_resp_send(req, DB_FCFLASH_PAGE, HTTPD_RESP_USE_STRLEN);
+    /* Served from the built frontend (frontend/fcflash.html) so this page shares
+     * ONE theme with the dashboard instead of duplicating it in a C literal.
+     * It is still its own page, not a dashboard anchor: it has to stay usable
+     * while the FC reboots mid-flash. */
+#if CONFIG_WEB_DEPLOY_EMBEDDED
+    const dbb_web_asset_t *asset = dbb_web_asset_find("/fcflash.html");
+    if (asset == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "fcflash.html missing from the embedded assets");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, asset->content_type);
+    return httpd_resp_send(req, (const char *)asset->data, asset->size);
+#else
+    return db_http_send_file_with_type(req, DB_WEB_BASE_PATH "/fcflash.html", "text/html");
+#endif
 }
 
 /**
@@ -1482,12 +1726,36 @@ static esp_err_t sonar_log_status_get_handler(httpd_req_t *req) {
                             status.partition_total_bytes);
     cJSON_AddNumberToObject(root, "partition_used_bytes",
                             status.partition_used_bytes);
-    cJSON_AddNumberToObject(root, "log_file_bytes", status.log_file_bytes);
-    cJSON_AddNumberToObject(root, "max_log_file_bytes",
-                            status.max_log_file_bytes);
-    cJSON_AddNumberToObject(root, "trim_to_bytes", status.trim_to_bytes);
-    cJSON_AddNumberToObject(root, "compaction_count",
-                            status.compaction_count);
+    cJSON_AddNumberToObject(root, "partition_free_bytes",
+                            status.partition_free_bytes);
+    cJSON_AddNumberToObject(root, "fc_image_reserve_bytes",
+                            status.fc_image_reserve_bytes);
+    cJSON_AddNumberToObject(root, "filesystem_headroom_bytes",
+                            status.filesystem_headroom_bytes);
+    cJSON_AddNumberToObject(root, "system_log_bytes",
+                            status.system_log_bytes);
+    cJSON_AddNumberToObject(root, "system_log_limit_bytes",
+                            status.system_log_limit_bytes);
+    cJSON_AddNumberToObject(root, "session_pool_limit_bytes",
+                            status.session_pool_limit_bytes);
+    cJSON_AddNumberToObject(root, "legacy_log_bytes",
+                            status.legacy_log_bytes);
+    cJSON_AddNumberToObject(root, "completed_session_count",
+                            status.completed_session_count);
+    cJSON_AddNumberToObject(root, "evicted_session_count",
+                            status.evicted_session_count);
+    cJSON_AddBoolToObject(root, "session_active", status.session_active);
+    cJSON_AddNumberToObject(root, "active_session_id",
+                            status.active_session_id);
+    cJSON_AddNumberToObject(root, "active_session_age_ms",
+                            status.active_session_age_ms);
+    cJSON_AddNumberToObject(root, "manual_remaining_ms",
+                            status.manual_remaining_ms);
+    cJSON_AddBoolToObject(root, "armed_capture_active",
+                          status.armed_capture_active);
+    cJSON_AddNumberToObject(root, "last_write_errno", status.last_write_errno);
+    cJSON_AddNumberToObject(root, "last_write_fail_stage",
+                            status.last_write_fail_stage);
 
     const char *resp = cJSON_Print(root);
     db_http_resp_sendstr_with_retry(req, resp);
@@ -1498,6 +1766,14 @@ static esp_err_t sonar_log_status_get_handler(httpd_req_t *req) {
 
 typedef struct {
     httpd_req_t *req;
+    /* Content-Disposition is deferred to the first chunk so an EMPTY log never
+     * produces a bogus attachment (a browser would silently save the "No
+     * entries" message as a .txt, and an automated puller would archive it as
+     * data). The buffer is owned by the handler's stack frame, which outlives
+     * the streaming call - httpd stores the pointer and serializes headers at
+     * the first send, so it must still be valid here. */
+    const char *disposition;
+    bool header_sent;
 } sonar_log_http_stream_context_t;
 
 static esp_err_t sonar_log_http_chunk_writer(const char *data,
@@ -1509,66 +1785,213 @@ static esp_err_t sonar_log_http_chunk_writer(const char *data,
         stream_context->req == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (!stream_context->header_sent) {
+        stream_context->header_sent = true;
+        if (stream_context->disposition != NULL) {
+            httpd_resp_set_hdr(stream_context->req, "Content-Disposition",
+                               stream_context->disposition);
+        }
+    }
     return httpd_resp_send_chunk(stream_context->req, data, data_length);
 }
 
-static esp_err_t sonar_log_stream_response(httpd_req_t *req,
-                                           bool as_download) {
-    db_sonar_log_status_t status = {0};
-    esp_err_t status_err = db_sonar_log_get_status(&status);
-    if (status_err != ESP_OK || !status.mounted) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "persistent sonar log unavailable");
+/* An oversize query must be a visible 400, not "every parameter silently
+ * takes its default" - that would serve the SYSTEM log for a trip request. */
+static bool sonar_log_query_too_long(httpd_req_t *req) {
+    return httpd_req_get_url_query_len(req) >= 160;
+}
+
+static bool sonar_log_query_value(httpd_req_t *req, const char *key,
+                                  char *value, size_t value_size) {
+    size_t length = httpd_req_get_url_query_len(req);
+    if (length == 0 || length >= 160) return false;
+    char query[160];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK)
+        return false;
+    return httpd_query_key_value(query, key, value, value_size) == ESP_OK;
+}
+
+/* Strict lookup: unknown names are a caller error, never a silent fallback.
+ * A validated name is also what the download filename is built from. */
+static bool sonar_log_stream_from_name(const char *name,
+                                       db_log_stream_t *stream) {
+    if (name == NULL || stream == NULL) return false;
+    if (strcmp(name, "system") == 0) *stream = DB_LOG_STREAM_SYSTEM;
+    else if (strcmp(name, "trip") == 0) *stream = DB_LOG_STREAM_TRIP;
+    else if (strcmp(name, "hardwired") == 0) *stream = DB_LOG_STREAM_HARDWIRED;
+    else if (strcmp(name, "deeper") == 0) *stream = DB_LOG_STREAM_DEEPER;
+    else if (strcmp(name, "legacy") == 0) *stream = DB_LOG_STREAM_LEGACY;
+    else return false;
+    return true;
+}
+
+static esp_err_t sonar_log_file_get_handler(httpd_req_t *req) {
+    if (sonar_log_query_too_long(req)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "query string too long");
         return ESP_FAIL;
     }
-
+    char type_name[16] = "system";
+    char session_text[16] = "0";
+    char download_text[4] = "0";
+    /* Must outlive httpd_resp_set_hdr: httpd stores the pointer and
+     * serializes headers only at the first send, so this cannot live in
+     * the download `if` block below. */
+    char disposition[96];
+    (void)sonar_log_query_value(req, "type", type_name, sizeof(type_name));
+    (void)sonar_log_query_value(req, "session", session_text,
+                                sizeof(session_text));
+    (void)sonar_log_query_value(req, "download", download_text,
+                                sizeof(download_text));
+    db_log_stream_t stream;
+    if (!sonar_log_stream_from_name(type_name, &stream)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "unknown log type");
+        return ESP_FAIL;
+    }
+    /* strtoul() silently yields 0 for non-numeric input, which would then trip
+     * the "session is required" check with a misleading message. Validate the
+     * text itself first. */
+    for (const char *p = session_text; *p != '\0'; ++p) {
+        if (*p < '0' || *p > '9') {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                "session must be numeric");
+            return ESP_FAIL;
+        }
+    }
+    uint32_t session_id = (uint32_t)strtoul(session_text, NULL, 10);
+    if (stream >= DB_LOG_STREAM_TRIP && stream <= DB_LOG_STREAM_DEEPER &&
+        session_id == 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "session is required for this log type");
+        return ESP_FAIL;
+    }
+    /* Session files are named session-%07lu; anything larger cannot name a
+     * valid file, so it is a malformed request (400), not a server fault. */
+    if (session_id > DB_SONAR_LOG_MAX_SESSION_ID) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "session id out of range");
+        return ESP_FAIL;
+    }
     httpd_resp_set_type(req, "text/plain");
-    if (as_download) {
-        httpd_resp_set_hdr(req, "Content-Disposition",
-                           "attachment; filename=\"sonar-log.txt\"");
+    sonar_log_http_stream_context_t context = {
+        .req = req, .disposition = NULL, .header_sent = false};
+    if (download_text[0] == '1') {
+        if (stream == DB_LOG_STREAM_SYSTEM || stream == DB_LOG_STREAM_LEGACY)
+            snprintf(disposition, sizeof(disposition),
+                     "attachment; filename=\"%s-log.txt\"", type_name);
+        else
+            snprintf(disposition, sizeof(disposition),
+                     "attachment; filename=\"session-%07lu-%s.txt\"",
+                     (unsigned long)session_id, type_name);
+        /* Registered by the chunk writer on the first chunk, not here: an
+         * empty log must not produce an attachment. */
+        context.disposition = disposition;
     }
-
-    if (status.log_file_bytes == 0) {
-        return httpd_resp_send(req,
-                               "No persistent sonar log entries yet.\n",
-                               HTTPD_RESP_USE_STRLEN);
-    }
-
-    sonar_log_http_stream_context_t stream_context = {.req = req};
     size_t bytes_streamed = 0;
     int file_errno = 0;
-    esp_err_t stream_err = db_sonar_log_stream(
-        sonar_log_http_chunk_writer, &stream_context, &bytes_streamed,
-        &file_errno);
-
-    if (stream_err != ESP_OK) {
+    esp_err_t err = db_sonar_log_stream(
+        stream, session_id, sonar_log_http_chunk_writer, &context,
+        &bytes_streamed, &file_errno);
+    if (err == ESP_ERR_NOT_FOUND && bytes_streamed == 0)
+        return httpd_resp_send(req, "No entries for this log.\n",
+                               HTTPD_RESP_USE_STRLEN);
+    if (err != ESP_OK) {
         if (bytes_streamed == 0) {
-            char error_message[160];
-            snprintf(error_message, sizeof(error_message),
-                     "failed to read persistent sonar log: %s (errno=%d: %s)",
-                     esp_err_to_name(stream_err), file_errno,
-                     file_errno != 0 ? strerror(file_errno) :
-                                       "no filesystem errno");
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                                error_message);
+            char message[128];
+            snprintf(message, sizeof(message), "failed to read log: %s errno=%d",
+                     esp_err_to_name(err), file_errno);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, message);
         }
-        /*
-         * If chunks were already sent, a new HTTP error response would corrupt
-         * the partial download. Returning failure lets the server close that
-         * response while the logger has already released its mutex and file.
-         */
         return ESP_FAIL;
     }
-
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 
-static esp_err_t sonar_log_get_handler(httpd_req_t *req) {
-    return sonar_log_stream_response(req, false);
+static esp_err_t sonar_log_sessions_get_handler(httpd_req_t *req) {
+    db_sonar_log_session_info_t sessions[DB_SONAR_LOG_MAX_SESSIONS];
+    size_t count = 0;
+    esp_err_t err = db_sonar_log_list_sessions(
+        sessions, DB_SONAR_LOG_MAX_SESSIONS, &count);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "logging sessions unavailable");
+        return ESP_FAIL;
+    }
+    cJSON *root = cJSON_CreateObject();
+    cJSON *items = cJSON_AddArrayToObject(root, "sessions");
+    for (size_t i = 0; i < count; ++i) {
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddNumberToObject(item, "id", sessions[i].id);
+        cJSON_AddBoolToObject(item, "active", sessions[i].active);
+        cJSON_AddNumberToObject(item, "trip_bytes", sessions[i].trip_bytes);
+        cJSON_AddNumberToObject(item, "hardwired_bytes",
+                                sessions[i].hardwired_bytes);
+        cJSON_AddNumberToObject(item, "deeper_bytes",
+                                sessions[i].deeper_bytes);
+        cJSON_AddItemToArray(items, item);
+    }
+    char *response = cJSON_PrintUnformatted(root);
+    httpd_resp_set_type(req, "application/json");
+    db_http_resp_sendstr_with_retry(req, response);
+    free(response);
+    cJSON_Delete(root);
+    return ESP_OK;
 }
 
-static esp_err_t sonar_log_download_get_handler(httpd_req_t *req) {
-    return sonar_log_stream_response(req, true);
+static esp_err_t sonar_log_capture_post_handler(httpd_req_t *req) {
+    if (sonar_log_query_too_long(req)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "query string too long");
+        return ESP_FAIL;
+    }
+    char seconds_text[16] = "1800";
+    (void)sonar_log_query_value(req, "seconds", seconds_text,
+                                sizeof(seconds_text));
+    uint32_t session_id = 0;
+    esp_err_t err = db_sonar_log_start_manual_capture(
+        (uint32_t)strtoul(seconds_text, NULL, 10), &session_id);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "failed to start manual capture");
+        return ESP_FAIL;
+    }
+    char response[96];
+    snprintf(response, sizeof(response),
+             "{\"status\":\"success\",\"session_id\":%lu}",
+             (unsigned long)session_id);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, response);
+}
+
+static esp_err_t sonar_log_capture_delete_handler(httpd_req_t *req) {
+    esp_err_t err = db_sonar_log_stop_manual_capture();
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "failed to stop manual capture");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"success\"}");
+}
+
+static esp_err_t sonar_log_session_delete_handler(httpd_req_t *req) {
+    if (sonar_log_query_too_long(req)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "query string too long");
+        return ESP_FAIL;
+    }
+    char session_text[16] = "0";
+    if (!sonar_log_query_value(req, "session", session_text,
+                               sizeof(session_text))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "session is required");
+        return ESP_FAIL;
+    }
+    esp_err_t err = db_sonar_log_delete_session(
+        (uint32_t)strtoul(session_text, NULL, 10));
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "active sessions cannot be deleted");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"status\":\"success\"}");
 }
 
 static esp_err_t sonar_log_raw_download_get_handler(httpd_req_t *req) {
@@ -1625,11 +2048,58 @@ static esp_err_t sonar_log_raw_download_get_handler(httpd_req_t *req) {
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 
-static esp_err_t sonar_log_delete_handler(httpd_req_t *req) {
-    esp_err_t err = db_sonar_log_clear();
+/* POST /api/logs/format?confirm=ERASE
+ *
+ * The only route that reclaims orphaned clusters. Deliberately NOT wired to
+ * DELETE /api/logs/all: that route removes named files and, on a volume
+ * whose directory has been lost, frees nothing while reporting success. */
+static esp_err_t sonar_log_format_post_handler(httpd_req_t *req) {
+    char q[96];
+    char confirm[16] = {0};
+    bool confirmed = false;
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "confirm", confirm, sizeof(confirm)) == ESP_OK) {
+        confirmed = (strcmp(confirm, "ERASE") == 0);
+    }
+    if (!confirmed) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "refusing: append ?confirm=ERASE - this destroys "
+                            "every log on the volume");
+        return ESP_FAIL;
+    }
+
+    esp_err_t err = db_sonar_log_format_volume();
+    if (err == ESP_ERR_INVALID_STATE) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "stop the active capture before formatting");
+        return ESP_FAIL;
+    }
     if (err != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "failed to clear persistent sonar log");
+                            esp_err_to_name(err));
+        return ESP_FAIL;
+    }
+
+    db_sonar_log_status_t st;
+    db_sonar_log_get_status(&st);
+    char body[192];
+    snprintf(body, sizeof(body),
+             "{\n  \"status\": \"success\",\n"
+             "  \"msg\": \"Logs volume reformatted.\",\n"
+             "  \"partition_used_bytes\": %u,\n"
+             "  \"partition_free_bytes\": %u\n}",
+             (unsigned)st.partition_used_bytes,
+             (unsigned)st.partition_free_bytes);
+    httpd_resp_set_type(req, "application/json");
+    db_http_resp_sendstr_with_retry(req, body);
+    return ESP_OK;
+}
+
+static esp_err_t sonar_log_clear_all_handler(httpd_req_t *req) {
+    esp_err_t err = db_sonar_log_clear_all();
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "stop the active capture before clearing logs");
         return ESP_FAIL;
     }
 
@@ -1637,7 +2107,7 @@ static esp_err_t sonar_log_delete_handler(httpd_req_t *req) {
     db_http_resp_sendstr_with_retry(req,
                                     "{\n"
                                     "  \"status\": \"success\",\n"
-                                    "  \"msg\": \"Persistent sonar log cleared.\"\n"
+                                    "  \"msg\": \"All operational and session logs cleared.\"\n"
                                     "}");
     return ESP_OK;
 }
@@ -2133,7 +2603,10 @@ esp_err_t start_rest_server(const char *base_path) {
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
-    config.max_uri_handlers = 36;
+    /* 36 base + 4 private-brain routes = 40 exactly; verified full on
+     * 20-08-2026. Headroom so the next route cannot be silently dropped
+     * (registration returns are not checked). */
+    config.max_uri_handlers = 48;
     config.stack_size = DB_HTTP_SERVER_STACK_SIZE;
     config.max_open_sockets = 12;      // raised with LWIP_MAX_SOCKETS=24 (BLE off freed the RAM) — comfortable multi-browser headroom
     config.lru_purge_enable = true;    // pool full -> recycle the stalest idle connection instead of rejecting (fixes the blank page on a 2nd/3rd client)
@@ -2193,6 +2666,61 @@ esp_err_t start_rest_server(const char *base_path) {
             .user_ctx = rest_context
     };
     httpd_register_uri_handler(server, &fcflash_page_uri);
+
+    httpd_uri_t fcparams_stored_uri = {
+            .uri = "/api/fcparams/stored", .method = HTTP_GET,
+            .handler = fcparams_stored_get_handler, .user_ctx = rest_context};
+    httpd_register_uri_handler(server, &fcparams_stored_uri);
+
+    httpd_uri_t fcparams_stored_del_uri = {
+            .uri = "/api/fcparams/stored", .method = HTTP_DELETE,
+            .handler = fcparams_stored_delete_handler, .user_ctx = rest_context};
+    httpd_register_uri_handler(server, &fcparams_stored_del_uri);
+
+    httpd_uri_t fcparams_restore_uri = {
+            .uri = "/api/fcparams/restore", .method = HTTP_POST,
+            .handler = fcparams_restore_post_handler, .user_ctx = rest_context};
+    httpd_register_uri_handler(server, &fcparams_restore_uri);
+
+    httpd_uri_t fcparams_dump_uri = {
+            .uri = "/api/fcparams/dump", .method = HTTP_POST,
+            .handler = fcparams_dump_post_handler, .user_ctx = rest_context};
+    httpd_register_uri_handler(server, &fcparams_dump_uri);
+
+    httpd_uri_t fcparams_status_uri = {
+            .uri = "/api/fcparams/status", .method = HTTP_GET,
+            .handler = fcparams_status_get_handler, .user_ctx = rest_context};
+    httpd_register_uri_handler(server, &fcparams_status_uri);
+
+    httpd_uri_t fcparams_file_uri = {
+            .uri = "/api/fcparams/file", .method = HTTP_GET,
+            .handler = fcparams_file_get_handler, .user_ctx = rest_context};
+    httpd_register_uri_handler(server, &fcparams_file_uri);
+
+    httpd_uri_t fcparams_load_uri = {
+            .uri = "/api/fcparams/load", .method = HTTP_POST,
+            .handler = fcparams_load_post_handler, .user_ctx = rest_context};
+    httpd_register_uri_handler(server, &fcparams_load_uri);
+
+    httpd_uri_t fctune_status_uri = {
+            .uri = "/api/fctune/status", .method = HTTP_GET,
+            .handler = fctune_status_get_handler, .user_ctx = rest_context};
+    httpd_register_uri_handler(server, &fctune_status_uri);
+
+    httpd_uri_t fctune_start_uri = {
+            .uri = "/api/fctune/start", .method = HTTP_POST,
+            .handler = fctune_start_post_handler, .user_ctx = rest_context};
+    httpd_register_uri_handler(server, &fctune_start_uri);
+
+    httpd_uri_t fctune_apply_uri = {
+            .uri = "/api/fctune/apply", .method = HTTP_POST,
+            .handler = fctune_apply_post_handler, .user_ctx = rest_context};
+    httpd_register_uri_handler(server, &fctune_apply_uri);
+
+    httpd_uri_t fctune_abort_uri = {
+            .uri = "/api/fctune/abort", .method = HTTP_POST,
+            .handler = fctune_abort_post_handler, .user_ctx = rest_context};
+    httpd_register_uri_handler(server, &fctune_abort_uri);
 
     httpd_uri_t fcflash_status_uri = {
             .uri = "/api/fcflash/status",
@@ -2311,21 +2839,21 @@ esp_err_t start_rest_server(const char *base_path) {
     };
     httpd_register_uri_handler(server, &sonar_log_status_get_uri);
 
-    httpd_uri_t sonar_log_get_uri = {
-            .uri = "/api/logs/sonar",
+    httpd_uri_t sonar_log_file_get_uri = {
+            .uri = "/api/logs/file",
             .method = HTTP_GET,
-            .handler = sonar_log_get_handler,
+            .handler = sonar_log_file_get_handler,
             .user_ctx = rest_context
     };
-    httpd_register_uri_handler(server, &sonar_log_get_uri);
+    httpd_register_uri_handler(server, &sonar_log_file_get_uri);
 
-    httpd_uri_t sonar_log_download_get_uri = {
-            .uri = "/api/logs/sonar/download",
+    httpd_uri_t sonar_log_sessions_get_uri = {
+            .uri = "/api/logs/sessions",
             .method = HTTP_GET,
-            .handler = sonar_log_download_get_handler,
+            .handler = sonar_log_sessions_get_handler,
             .user_ctx = rest_context
     };
-    httpd_register_uri_handler(server, &sonar_log_download_get_uri);
+    httpd_register_uri_handler(server, &sonar_log_sessions_get_uri);
 
     httpd_uri_t sonar_log_raw_download_get_uri = {
             .uri = "/api/logs/raw/download",
@@ -2335,13 +2863,45 @@ esp_err_t start_rest_server(const char *base_path) {
     };
     httpd_register_uri_handler(server, &sonar_log_raw_download_get_uri);
 
-    httpd_uri_t sonar_log_delete_uri = {
-            .uri = "/api/logs/sonar",
-            .method = HTTP_DELETE,
-            .handler = sonar_log_delete_handler,
+    httpd_uri_t sonar_log_capture_post_uri = {
+            .uri = "/api/logs/capture",
+            .method = HTTP_POST,
+            .handler = sonar_log_capture_post_handler,
             .user_ctx = rest_context
     };
-    httpd_register_uri_handler(server, &sonar_log_delete_uri);
+    httpd_register_uri_handler(server, &sonar_log_capture_post_uri);
+
+    httpd_uri_t sonar_log_capture_delete_uri = {
+            .uri = "/api/logs/capture",
+            .method = HTTP_DELETE,
+            .handler = sonar_log_capture_delete_handler,
+            .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &sonar_log_capture_delete_uri);
+
+    httpd_uri_t sonar_log_session_delete_uri = {
+            .uri = "/api/logs/session",
+            .method = HTTP_DELETE,
+            .handler = sonar_log_session_delete_handler,
+            .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &sonar_log_session_delete_uri);
+
+    httpd_uri_t sonar_log_clear_all_uri = {
+            .uri = "/api/logs/all",
+            .method = HTTP_DELETE,
+            .handler = sonar_log_clear_all_handler,
+            .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &sonar_log_clear_all_uri);
+
+    httpd_uri_t sonar_log_format_post_uri = {
+            .uri = "/api/logs/format",
+            .method = HTTP_POST,
+            .handler = sonar_log_format_post_handler,
+            .user_ctx = rest_context
+    };
+    httpd_register_uri_handler(server, &sonar_log_format_post_uri);
 
     httpd_uri_t location_db_status_get_uri = {
             .uri = "/api/location-db/status",

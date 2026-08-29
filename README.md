@@ -19,7 +19,10 @@ DBB Companion moves that link **onto the boat**. The ESP32 sits right next to th
 - **MAVLink 2 Wi-Fi bridge** to an ArduPilot / ArduRover flight controller (plus a transparent passthrough mode).
 - **Web dashboard** (AP or STA) — settings, live stats, sonar debug, logs.
 - **Dual-slot A/B OTA** with a baked-in recovery portal, plus a `factory` fallback image the bootloader reverts to if both slots fail. On the S3 target the web UI is embedded in the app, so firmware and UI update atomically.
-- **Persistent sonar log** with HTTP download.
+- **Separated on-device logs** — bounded system events plus per-capture-session trip/energy,
+  hardwired-sonar and Deeper-sonar files (armed or timed manual capture), browsable and
+  downloadable per stream from the web UI; whole-session retention that never touches the
+  FC firmware reserve.
 - **Flight-controller firmware updates over USB OTG** — upload an ArduPilot `.apj` through the web
   UI and the companion reflashes the FC itself, no PC and no opening the hull. Measured
   111 KB/s.

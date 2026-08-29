@@ -22,6 +22,7 @@ let active_sonar_source = 0;	// 0 none, 1 hardwired, 2 deeper
 let cached_system_info = null;
 let cached_runtime_info = null;
 let cached_sonar_log_status = null;
+let cached_log_sessions = [];
 let esp_uptime_ms = null;
 // 1000 ms was too tight: a single TCP retransmit on the boat link exceeds it.
 // get_stats() polls every 500 ms, so a longer timeout could stack requests -
@@ -416,34 +417,94 @@ function render_sonar_log_status() {
 		return;
 	}
 
-	const logBytes = parseInt(cached_sonar_log_status["log_file_bytes"]);
-	const maxLogBytes = parseInt(cached_sonar_log_status["max_log_file_bytes"]);
 	const usedBytes = parseInt(cached_sonar_log_status["partition_used_bytes"]);
 	const totalBytes = parseInt(cached_sonar_log_status["partition_total_bytes"]);
-	const compactionCount = parseInt(cached_sonar_log_status["compaction_count"]);
-	const percent = maxLogBytes > 0 ? ((logBytes / maxLogBytes) * 100).toFixed(1) : "0.0";
-
-	status_div.innerHTML = "Persistent log file: " + logBytes + " / " + maxLogBytes + " bytes (" + percent +
-		"% of rolling budget)<br>Partition usage: " + usedBytes + " / " + totalBytes +
-		" bytes, compactions this boot: " + compactionCount;
+	const freeBytes = parseInt(cached_sonar_log_status["partition_free_bytes"]);
+	const sessionActive = cached_sonar_log_status["session_active"] === true;
+	const activeId = parseInt(cached_sonar_log_status["active_session_id"]);
+	const manualMs = parseInt(cached_sonar_log_status["manual_remaining_ms"]);
+	const reserve = parseInt(cached_sonar_log_status["fc_image_reserve_bytes"]);
+	const headroom = parseInt(cached_sonar_log_status["filesystem_headroom_bytes"]);
+	status_div.innerHTML = "Partition: " + usedBytes + " used / " + totalBytes + " bytes (" + freeBytes + " free)" +
+		"<br>Protected: " + reserve + " bytes for FC firmware + " + headroom + " bytes filesystem headroom" +
+		"<br>Capture: " + (sessionActive ? "session " + activeId + " active" : "waiting for arm or manual start") +
+		(manualMs > 0 ? ", manual timer " + Math.ceil(manualMs / 60000) + " min remaining" : "") +
+		"; complete sessions: " + parseInt(cached_sonar_log_status["completed_session_count"]);
 }
 
+let s_log_status_in_flight = false;
 function get_sonar_log_status() {
+	// Polled every 5 s from index.html: never stack requests, and stop
+	// entirely while the tab is hidden - this ESP's HTTP server starves the
+	// MAVLink bridge under background polling.
+	if (document.hidden || s_log_status_in_flight) return;
+	s_log_status_in_flight = true;
 	get_json("api/logs/status").then(json_data => {
 		cached_sonar_log_status = json_data;
 		render_sonar_log_status();
 	}).catch(error => {
 		const normalized_error = normalize_request_error(error);
 		document.getElementById("sonar_log_status").innerHTML = normalized_error.message;
+	}).finally(() => {
+		s_log_status_in_flight = false;
 	});
 }
 
+function refresh_log_sessions() {
+	get_json("api/logs/sessions").then(data => {
+		cached_log_sessions = Array.isArray(data.sessions) ? data.sessions : [];
+		const select = document.getElementById("log_session_select");
+		if (select == null) return;
+		const previous = select.value;
+		select.innerHTML = "";
+		if (cached_log_sessions.length === 0) {
+			// Keep the placeholder alive - an empty <select> looks broken and
+			// would let session=0 requests through.
+			const option = document.createElement("option");
+			option.value = "";
+			option.textContent = "No captured sessions yet";
+			select.appendChild(option);
+			return;
+		}
+		cached_log_sessions.forEach(session => {
+			const option = document.createElement("option");
+			option.value = session.id;
+			option.textContent = "Session " + String(session.id).padStart(7, "0") +
+				(session.active ? " (active)" : "") + " - trip " + session.trip_bytes +
+				" B, hardwired " + session.hardwired_bytes + " B, Deeper " + session.deeper_bytes + " B";
+			select.appendChild(option);
+		});
+		if (previous && Array.from(select.options).some(option => option.value === previous)) select.value = previous;
+	}).catch(error => {
+		// Background refresh (conn-status flips call this too): a listing
+		// failure must never clobber the log view the user is reading.
+		// get_json already counted the failure; leave the list as it was.
+	});
+}
+
+function selected_log_url(download = false) {
+	const type = document.getElementById("log_type_select").value;
+	const session = document.getElementById("log_session_select").value;
+	const needs_session = type === "trip" || type === "hardwired" || type === "deeper";
+	// Session-scoped streams without a real session would only produce a 400
+	// from the firmware - refuse client-side with a usable message instead.
+	if (needs_session && !parseInt(session)) return null;
+	return "api/logs/file?type=" + encodeURIComponent(type) + "&session=" + encodeURIComponent(session || "0") +
+		(download ? "&download=1" : "");
+}
+
 async function refresh_sonar_log(quiet = false) {
+	const url = selected_log_url(false);
+	if (url == null) {
+		document.getElementById("sonar_persistent_log").value = "Select a capture session for this log type.";
+		return;
+	}
 	try {
-		document.getElementById("sonar_persistent_log").value = "Loading persistent sonar log...";
-		const log_text = await get_text("api/logs/sonar");
+		document.getElementById("sonar_persistent_log").value = "Loading selected log...";
+		const log_text = await get_text(url);
 		document.getElementById("sonar_persistent_log").value = log_text;
 		get_sonar_log_status();
+		refresh_log_sessions();
 	} catch (error) {
 		document.getElementById("sonar_persistent_log").value = error.message;
 		if (!quiet) {
@@ -453,15 +514,16 @@ async function refresh_sonar_log(quiet = false) {
 }
 
 function download_sonar_log() {
-	window.location = ROOT_URL + "api/logs/sonar/download";
-}
-
-async function clear_sonar_log() {
-	if (confirm("Do you want to clear the persistent sonar log?\nThis removes the currently saved rolling history.") !== true) {
+	const url = selected_log_url(true);
+	if (url == null) {
+		show_toast("Select a capture session for this log type.", "#7a0f19");
 		return;
 	}
+	window.location = ROOT_URL + url;
+}
 
-	const post_url = ROOT_URL + "api/logs/sonar";
+async function logging_delete(api_path) {
+	const post_url = ROOT_URL + api_path;
 	const response = await fetch(post_url, {
 		method: 'DELETE',
 		headers: {
@@ -473,15 +535,64 @@ async function clear_sonar_log() {
 	});
 
 	if (!response.ok) {
+		// The board answered - the link is up; the refusal text is the
+		// message. Callers toast it exactly once.
+		note_conn_ok();
 		const message = await response.text();
-		show_toast(message || `An error has occured: ${response.status}`, "#7a0f19");
+		throw new Error(message || `An error has occured: ${response.status}`);
+	}
+	return await response.json();
+}
+
+async function start_manual_log_capture() {
+	const minutes = parseInt(document.getElementById("manual_log_minutes").value);
+	if (isNaN(minutes) || minutes < 1 || minutes > 720) {
+		show_toast("Capture length must be 1-720 minutes.", "#7a0f19");
 		return;
 	}
-
-	const json = await response.json();
-	document.getElementById("sonar_persistent_log").value = "Persistent sonar log cleared.";
-	show_toast(json["msg"]);
+	try {
+		const response = await fetch(ROOT_URL + "api/logs/capture?seconds=" + (minutes * 60), {method: 'POST'});
+		if (!response.ok) {
+			note_conn_ok();
+			show_toast(await response.text() || `An error has occured: ${response.status}`, "#7a0f19");
+			return;
+		}
+		const data = await response.json();
+		show_toast("Manual capture started in session " + data.session_id + ".");
+	} catch (error) {
+		show_toast(normalize_request_error(error).message, "#7a0f19");
+		return;
+	}
 	get_sonar_log_status();
+	refresh_log_sessions();
+}
+
+async function stop_manual_log_capture() {
+	try { await logging_delete("api/logs/capture"); show_toast("Manual capture stopped."); }
+	catch (error) { show_toast(error.message, "#7a0f19"); }
+	get_sonar_log_status(); refresh_log_sessions();
+}
+
+async function delete_selected_log_session() {
+	const session = document.getElementById("log_session_select").value;
+	if (!session) {
+		show_toast("No capture session selected.", "#7a0f19");
+		return;
+	}
+	if (confirm("Delete complete logging session " + session + "?") !== true) return;
+	try { await logging_delete("api/logs/session?session=" + encodeURIComponent(session)); show_toast("Session deleted."); }
+	catch (error) { show_toast(error.message, "#7a0f19"); }
+	get_sonar_log_status(); refresh_log_sessions();
+}
+
+async function clear_sonar_log() {
+	if (confirm("Clear ALL operational, trip and sonar logs?\nThe FC firmware image is not affected.") !== true) return;
+	try {
+		const json = await logging_delete("api/logs/all");
+		document.getElementById("sonar_persistent_log").value = "All logs cleared.";
+		show_toast(json.msg || "All logs cleared.");
+	} catch (error) { show_toast(error.message, "#7a0f19"); }
+	get_sonar_log_status(); refresh_log_sessions();
 }
 
 function get_runtime_firmware_info() {
@@ -567,6 +678,7 @@ function update_conn_status() {
 		get_system_info();
 		get_settings();
 		get_sonar_log_status();
+		refresh_log_sessions();
 		const sonar_log_elem = document.getElementById("sonar_persistent_log");
 		if (sonar_log_elem != null &&
 			(sonar_log_elem.value === "Waiting for persistent sonar log..." ||

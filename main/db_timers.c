@@ -20,6 +20,9 @@
 #include "db_timers.h"
 #include "danevi_sonar.h"
 #include "db_sonar_log.h"
+#include "db_fc_params.h"
+#include "db_fc_tune.h"
+#include "db_netlog.h"
 #include "deeper_udp_sonar.h"
 #include "db_mavlink_msgs.h"
 #include "db_parameters.h"
@@ -258,6 +261,12 @@ static bool db_get_active_sonar_distance(int *distance_mm,
  * dedicated task so the FreeRTOS timer service task stays lightweight.
  */
 static void db_publish_active_sonar_distance(void) {
+  /* One common cadence drives trip/energy collection and manual-capture
+   * expiry, even when no sonar sample is currently available. */
+  db_sonar_log_tick();
+  db_fc_params_tick();
+  db_fc_tune_tick();
+  db_netlog_tick(); /* drains Wi-Fi breadcrumbs; must not run on the Wi-Fi task */
   if (DB_PARAM_SERIAL_PROTO != DB_SERIAL_PROTOCOL_MAVLINK) {
     return;
   }
