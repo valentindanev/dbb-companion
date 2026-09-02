@@ -42,7 +42,6 @@
 #include "db_fc_flash.h"
 #include "db_fc_params.h"
 #include "db_fc_tune.h"
-#include "db_location_store.h"
 #include "db_ota_policy.h"
 #include "db_sonar_log.h"
 #include "danevi_sonar.h"
@@ -2112,245 +2111,6 @@ static esp_err_t sonar_log_clear_all_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-static const char *db_location_entity_name(uint8_t entity_type) {
-    switch (entity_type) {
-    case DB_LOCATION_ENTITY_LAKE:
-        return "lake";
-    case DB_LOCATION_ENTITY_SWIM:
-        return "swim";
-    case DB_LOCATION_ENTITY_POINT:
-        return "point";
-    case DB_LOCATION_ENTITY_TRIP:
-        return "trip";
-    case DB_LOCATION_ENTITY_USAGE:
-        return "usage";
-    default:
-        return "unknown";
-    }
-}
-
-static void db_location_u64_hex(uint64_t value, char output[17]) {
-    snprintf(output, 17, "%016llx", (unsigned long long)value);
-}
-
-static esp_err_t location_db_status_get_handler(httpd_req_t *req) {
-    db_location_status_t status = {0};
-    db_location_store_get_status(&status);
-    cJSON *root = cJSON_CreateObject();
-    if (root == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-    char uuid[17];
-    char content_crc[9];
-    db_location_u64_hex(status.database_uuid, uuid);
-    snprintf(content_crc, sizeof(content_crc), "%08lx",
-             (unsigned long)status.content_crc32c);
-    cJSON_AddBoolToObject(root, "available", status.available);
-    cJSON_AddBoolToObject(root, "recovery_fault", status.recovery_fault);
-    cJSON_AddStringToObject(root, "database_uuid", uuid);
-    cJSON_AddNumberToObject(root, "format_version",
-                           DB_LOCATION_FORMAT_VERSION);
-    cJSON_AddNumberToObject(root, "protocol_version",
-                           DB_LOCATION_PROTOCOL_VERSION);
-    cJSON_AddNumberToObject(root, "generation", status.generation);
-    cJSON_AddStringToObject(root, "content_crc32c", content_crc);
-    cJSON_AddNumberToObject(root, "snapshot_sequence",
-                           status.snapshot_sequence);
-    cJSON_AddNumberToObject(root, "record_count", status.record_count);
-    char active[2] = {status.active_partition, '\0'};
-    cJSON_AddStringToObject(root, "active_partition",
-                            status.available ? active : "");
-    cJSON_AddNumberToObject(root, "active_slot", status.active_slot);
-    cJSON_AddNumberToObject(root, "valid_slots_a", status.valid_slots_a);
-    cJSON_AddNumberToObject(root, "valid_slots_b", status.valid_slots_b);
-    cJSON_AddNumberToObject(root, "newest_generation_a",
-                           status.newest_generation_a);
-    cJSON_AddNumberToObject(root, "newest_generation_b",
-                           status.newest_generation_b);
-    cJSON_AddNumberToObject(root, "partition_size_a",
-                           (double)status.partition_size_a);
-    cJSON_AddNumberToObject(root, "partition_size_b",
-                           (double)status.partition_size_b);
-    cJSON_AddNumberToObject(root, "maximum_records",
-                           DB_LOCATION_MAX_RECORDS);
-    cJSON_AddNumberToObject(root, "record_size_bytes",
-                           DB_LOCATION_RECORD_SIZE);
-
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (json == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    esp_err_t err = httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
-    free(json);
-    return err;
-}
-
-typedef struct {
-    httpd_req_t *request;
-    bool first;
-} db_location_export_context_t;
-
-static esp_err_t db_location_export_record(
-    const db_location_record_t *record, void *context) {
-    db_location_export_context_t *export_context = context;
-    cJSON *json_record = cJSON_CreateObject();
-    if (json_record == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-    char entity_id[17];
-    char parent_id[17];
-    char name[DB_LOCATION_NAME_BYTES + 1];
-    db_location_u64_hex(record->entity_id, entity_id);
-    db_location_u64_hex(record->parent_id, parent_id);
-    size_t name_length = record->name_length;
-    if (name_length > DB_LOCATION_NAME_BYTES) {
-        name_length = DB_LOCATION_NAME_BYTES;
-    }
-    memcpy(name, record->name, name_length);
-    name[name_length] = '\0';
-    cJSON_AddStringToObject(json_record, "entity_id", entity_id);
-    cJSON_AddStringToObject(json_record, "type",
-                            db_location_entity_name(record->entity_type));
-    cJSON_AddStringToObject(json_record, "parent_id", parent_id);
-    cJSON_AddNumberToObject(json_record, "revision", record->revision);
-    cJSON_AddNumberToObject(json_record, "flags", record->flags);
-    cJSON_AddStringToObject(json_record, "name", name);
-    cJSON_AddNumberToObject(json_record, "created_unix",
-                           record->created_unix);
-    cJSON_AddNumberToObject(json_record, "updated_unix",
-                           record->updated_unix);
-    if (record->entity_type == DB_LOCATION_ENTITY_SWIM) {
-        cJSON_AddNumberToObject(json_record, "mapping_revision",
-                               record->mapping_revision);
-    } else if (record->entity_type == DB_LOCATION_ENTITY_POINT) {
-        cJSON_AddNumberToObject(json_record, "active_code",
-                               record->active_code);
-        cJSON_AddNumberToObject(json_record, "role", record->role);
-        cJSON_AddNumberToObject(json_record, "latitude_e7",
-                               record->latitude_e7);
-        cJSON_AddNumberToObject(json_record, "longitude_e7",
-                               record->longitude_e7);
-        cJSON_AddNumberToObject(json_record, "depth_mm", record->depth_mm);
-        cJSON_AddNumberToObject(json_record, "saved_unix",
-                               record->saved_unix);
-        cJSON_AddNumberToObject(json_record, "navigation_revision",
-                               record->navigation_revision);
-    }
-    char *json = cJSON_PrintUnformatted(json_record);
-    cJSON_Delete(json_record);
-    if (json == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-    esp_err_t err = ESP_OK;
-    if (!export_context->first) {
-        err = httpd_resp_send_chunk(export_context->request, ",", 1);
-    }
-    if (err == ESP_OK) {
-        err = httpd_resp_send_chunk(export_context->request, json,
-                                    HTTPD_RESP_USE_STRLEN);
-    }
-    export_context->first = false;
-    free(json);
-    return err;
-}
-
-static esp_err_t location_db_export_get_handler(httpd_req_t *req) {
-    db_location_status_t status = {0};
-    db_location_store_get_status(&status);
-    if (!status.available) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "location database unavailable");
-        return ESP_FAIL;
-    }
-    char uuid[17];
-    char crc[9];
-    char prefix[256];
-    db_location_u64_hex(status.database_uuid, uuid);
-    snprintf(crc, sizeof(crc), "%08lx",
-             (unsigned long)status.content_crc32c);
-    snprintf(prefix, sizeof(prefix),
-             "{\"format\":\"dbb-location-export-v1\","
-             "\"database_uuid\":\"%s\",\"generation\":%lu,"
-             "\"content_crc32c\":\"%s\",\"records\":[",
-             uuid, (unsigned long)status.generation, crc);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    httpd_resp_set_hdr(req, "Content-Disposition",
-                       "attachment; filename=\"dbb-location-db.json\"");
-    esp_err_t err = httpd_resp_send_chunk(req, prefix, HTTPD_RESP_USE_STRLEN);
-    db_location_export_context_t context = {.request = req, .first = true};
-    if (err == ESP_OK) {
-        err = db_location_store_foreach(db_location_export_record, &context);
-    }
-    if (err == ESP_OK) {
-        err = httpd_resp_send_chunk(req, "]}", 2);
-    }
-    if (err == ESP_OK) {
-        err = httpd_resp_send_chunk(req, NULL, 0);
-    }
-    return err;
-}
-
-#if CONFIG_DB_LOCATION_BENCH_TEST
-static esp_err_t location_db_bench_post_handler(httpd_req_t *req) {
-    char body[128];
-    if (req->content_len <= 0 || req->content_len >= (int)sizeof(body)) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "small JSON action required");
-        return ESP_FAIL;
-    }
-    int received_total = 0;
-    while (received_total < req->content_len) {
-        int received = httpd_req_recv(req, body + received_total,
-                                      req->content_len - received_total);
-        if (received <= 0) {
-            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                                "request receive failed");
-            return ESP_FAIL;
-        }
-        received_total += received;
-    }
-    body[received_total] = '\0';
-    cJSON *root = cJSON_Parse(body);
-    cJSON *action = root == NULL ? NULL : cJSON_GetObjectItem(root, "action");
-    if (!cJSON_IsString(action) || action->valuestring == NULL) {
-        cJSON_Delete(root);
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid action");
-        return ESP_FAIL;
-    }
-    bool reboot = false;
-    esp_err_t err;
-    if (strcmp(action->valuestring, "seed") == 0) {
-        err = db_location_store_bench_seed();
-    } else if (strcmp(action->valuestring, "rename-point") == 0) {
-        err = db_location_store_bench_rename_point();
-    } else if (strcmp(action->valuestring, "corrupt-active-header") == 0) {
-        err = db_location_store_bench_corrupt_active_header();
-        reboot = err == ESP_OK;
-    } else {
-        err = ESP_ERR_INVALID_ARG;
-    }
-    cJSON_Delete(root);
-    if (err != ESP_OK) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            esp_err_to_name(err));
-        return ESP_FAIL;
-    }
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    httpd_resp_sendstr(req, reboot
-                               ? "{\"status\":\"active DB header erased; rebooting\"}"
-                               : "{\"status\":\"committed\"}");
-    if (reboot) {
-        vTaskDelay(pdMS_TO_TICKS(250));
-        esp_restart();
-    }
-    return ESP_OK;
-}
-#endif
 
 typedef struct {
     httpd_req_t *request;
@@ -2606,7 +2366,15 @@ esp_err_t start_rest_server(const char *base_path) {
     /* 36 base + 4 private-brain routes = 40 exactly; verified full on
      * 20-08-2026. Headroom so the next route cannot be silently dropped
      * (registration returns are not checked). */
-    config.max_uri_handlers = 48;
+    /*
+     * Headroom is deliberate. The base itself registers ~45 routes, and a
+     * linked brain adds its own through dbb_brain_register_http() - which
+     * this file cannot see or count. Overflowing the table does not fail
+     * loudly: httpd_register_uri_handler() just returns an error, and a
+     * caller that ignores it ends up serving 404 for a route it believes it
+     * registered. Found exactly that way on 31-08-2026.
+     */
+    config.max_uri_handlers = 72;
     config.stack_size = DB_HTTP_SERVER_STACK_SIZE;
     config.max_open_sockets = 12;      // raised with LWIP_MAX_SOCKETS=24 (BLE off freed the RAM) — comfortable multi-browser headroom
     config.lru_purge_enable = true;    // pool full -> recycle the stalest idle connection instead of rejecting (fixes the blank page on a 2nd/3rd client)
@@ -2903,31 +2671,6 @@ esp_err_t start_rest_server(const char *base_path) {
     };
     httpd_register_uri_handler(server, &sonar_log_format_post_uri);
 
-    httpd_uri_t location_db_status_get_uri = {
-            .uri = "/api/location-db/status",
-            .method = HTTP_GET,
-            .handler = location_db_status_get_handler,
-            .user_ctx = rest_context
-    };
-    httpd_register_uri_handler(server, &location_db_status_get_uri);
-
-    httpd_uri_t location_db_export_get_uri = {
-            .uri = "/api/location-db/export",
-            .method = HTTP_GET,
-            .handler = location_db_export_get_handler,
-            .user_ctx = rest_context
-    };
-    httpd_register_uri_handler(server, &location_db_export_get_uri);
-
-#if CONFIG_DB_LOCATION_BENCH_TEST
-    httpd_uri_t location_db_bench_post_uri = {
-            .uri = "/api/location-db/bench",
-            .method = HTTP_POST,
-            .handler = location_db_bench_post_handler,
-            .user_ctx = rest_context
-    };
-    httpd_register_uri_handler(server, &location_db_bench_post_uri);
-#endif
 
     httpd_uri_t diagnostics_status_get_uri = {
             .uri = "/api/diagnostics/status",

@@ -26,12 +26,12 @@
 #   is cheap while the boards are on the desk.
 #
 # *** BEFORE RESIZING ANYTHING HERE, READ THIS ***
-#   db_a and db_b are load-bearing. main/db_location_store.c refuses to
-#   initialise unless BOTH are exactly 128 KiB:
-#       DB_LOCATION_SLOT_SIZE (0x20000) * DB_LOCATION_SLOT_COUNT (1)
-#   Change either partition's size without changing those two constants in the
-#   SAME commit and the location database does not crash - it silently fails to
-#   mount, and the boat comes up with no saved points.
+#   db_a and db_b are reserved for a companion data store. This base does not
+#   use them, but they are load-bearing and must not be resized or removed:
+#   the layout has to stay byte-identical across builds, because OTA between
+#   images with different partition tables is not possible. The store that
+#   does use them requires BOTH to be exactly 128 KiB and fails to mount -
+#   silently, without crashing - if either changes.
 #   The `diag` partition is likewise read in 4096-byte records by
 #   main/db_diag.c (DB_DIAG_SECTOR_SIZE); its size must stay a multiple of that
 #   and at least two sectors.

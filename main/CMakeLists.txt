@@ -11,7 +11,6 @@ set(SRCS
         deeper_udp_sonar.c
         db_sonar_log.c
         db_diag.c
-        db_location_store.c
         db_fc_flash.c
         db_fc_params.c
         db_fc_tune.c

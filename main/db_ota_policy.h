@@ -38,7 +38,11 @@ extern "C" {
  */
 #define DB_OTA_HEALTH_NVS (1U << 0)
 #define DB_OTA_HEALTH_DIAGNOSTICS (1U << 1)
-#define DB_OTA_HEALTH_LOCATION_DB (1U << 2)
+/* Bit 2 was DB_OTA_HEALTH_LOCATION_DB until 31-08-2026. The POSITION is kept
+ * deliberately: renumbering would invalidate persisted health state, and the
+ * open base must not name a location database. Claimed by the private brain
+ * through dbb_brain_ota_health(); never required in an open-base build. */
+#define DB_OTA_HEALTH_BRAIN (1U << 2)
 #define DB_OTA_HEALTH_LOGS (1U << 3)
 #define DB_OTA_HEALTH_WEB (1U << 4)
 #define DB_OTA_HEALTH_RADIO (1U << 5)

@@ -54,7 +54,6 @@
 #include "db_parameters.h"
 #include "db_diag.h"
 #include "db_fc_flash.h"
-#include "db_location_store.h"
 #include "db_mavlink_msgs.h"
 #include "db_ota_policy.h"
 #include "db_serial.h"
@@ -1230,21 +1229,6 @@ void app_main() {
     ESP_LOGW(TAG, "Persistent diagnostic journal is unavailable");
   }
 #endif
-#if CONFIG_DB_LOCATION_STORE
-  ota_health_required |= DB_OTA_HEALTH_LOCATION_DB;
-  if (db_location_store_init() == ESP_OK) {
-    db_location_status_t location_status;
-    db_location_store_get_status(&location_status);
-    if (location_status.available && !location_status.recovery_fault) {
-      ota_health_passed |= DB_OTA_HEALTH_LOCATION_DB;
-    } else {
-      ota_health_failed |= DB_OTA_HEALTH_LOCATION_DB;
-    }
-  } else {
-    ota_health_failed |= DB_OTA_HEALTH_LOCATION_DB;
-    ESP_LOGW(TAG, "Persistent A/B location database is unavailable");
-  }
-#endif
   force_update_ap_mode = db_consume_update_ap_mode_on_next_boot();
   DB_RADIO_MODE_DESIGNATED =
       DB_PARAM_RADIO_MODE; // must always match, mismatch only allowed when
@@ -1293,10 +1277,21 @@ void app_main() {
                      original_wifi_pass);
 
         db_init_wifi_apmode(boot_radio_mode);
-        hardwired_sonar_selected = true;
-        DB_ACTIVE_SONAR_SOURCE = DB_SONAR_SOURCE_HARDWIRED;
-        ESP_LOGI(TAG, "Deeper boot probe failed. Staying in AP mode and using "
-                      "hardwired sonar until the next reboot.");
+        /* The Deeper probe failing does not overrule ss_hardwired_en. A
+         * boat configured with the hardwired transducer disabled - no
+         * sensor fitted, or a deliberate Deeper-only run - must not have
+         * UART2 driven behind the owner's back, and the boot log must not
+         * report a source that was never initialised. Matches the other
+         * four selection sites. */
+        hardwired_sonar_selected = DB_PARAM_HARDWIRED_EN;
+        DB_ACTIVE_SONAR_SOURCE = hardwired_sonar_selected
+                                     ? DB_SONAR_SOURCE_HARDWIRED
+                                     : DB_SONAR_SOURCE_NONE;
+        ESP_LOGI(TAG,
+                 "Deeper boot probe failed. Staying in AP mode with %s "
+                 "until the next reboot.",
+                 hardwired_sonar_selected ? "the hardwired sonar"
+                                          : "no depth source (ss_hardwired_en=0)");
       } else {
         s_deeper_sta_session_active = true;
         db_copy_cstr(DB_PARAM_WIFI_SSID, db_param_ssid.value.db_param_str.max_len,
@@ -1448,6 +1443,19 @@ void app_main() {
     // Disable legacy support for DroneBridge communication module - no use case
     // for DroneBridge for ESP32 communication_module();
   }
+  /*
+   * Last chance to change the required mask: dbb_brain_init() has already run,
+   * so a linked private brain can gate its own subsystems here. The weak stub
+   * returns zeros, so the open base is unaffected.
+   */
+  {
+    uint32_t brain_required = 0U, brain_passed = 0U, brain_failed = 0U;
+    dbb_brain_ota_health(&brain_required, &brain_passed, &brain_failed);
+    ota_health_required |= brain_required;
+    ota_health_passed |= brain_passed;
+    ota_health_failed |= brain_failed;
+  }
+
   db_start_ota_health_gate(ota_health_required, ota_health_passed,
                            ota_health_failed);
   db_ota_crash_guard_mark_healthy();

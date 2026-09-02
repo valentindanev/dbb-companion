@@ -137,24 +137,6 @@ menu "DroneBridge for ESP32 Configuration"
             Adds endpoints that deliberately abort the firmware and erase the
             resulting coredump. Never enable this in a deployed build.
 
-    config DB_LOCATION_STORE
-        bool "Use the dedicated A/B fishing-location database"
-        default y if IDF_TARGET_ESP32S3
-        default n
-        help
-            Store versioned, checksummed fishing-location snapshots in rotating
-            slots across the dedicated db_a and db_b partitions. Commits write
-            payload first and the validated header last, preserving the prior
-            partition through power loss.
-
-    config DB_LOCATION_BENCH_TEST
-        bool "Expose destructive bench-only location database tests"
-        depends on DB_LOCATION_STORE
-        default n
-        help
-            Adds synthetic seed/rename and active-header corruption actions for
-            A/B recovery testing. Never enable this in a deployed build.
-
     config DB_OTA_HEALTH_GATE
         bool "Require the DBB post-OTA health gate"
         depends on BOOTLOADER_APP_ROLLBACK_ENABLE
