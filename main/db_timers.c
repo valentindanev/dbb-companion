@@ -40,12 +40,17 @@
 #define DB_MAVLINK_SONAR_TASK_PRIORITY 5
 #define DB_MAVLINK_DEEPER_TEMP_PERIOD_MS 1000
 #define DB_MAVLINK_DEEPER_TEMP_NAME "waterTemp"
+#define DB_MAVLINK_FC_HEARTBEAT_PERIOD_MS 1000
+// MAV_COMP_ID_ONBOARD_COMPUTER. Everything this firmware injects towards the FC carries this
+// component id, and it is the identity the ELRS module's reply path already expects.
+#define DB_MAVLINK_ESP_COMPONENT_ID 191
 
 static TaskHandle_t s_sonar_publish_task_handle = NULL;
 static TimerHandle_t s_sonar_timer_handle = NULL;
 static TickType_t s_last_sonar_log_tick = 0;
 static TickType_t s_last_deeper_temp_publish_tick = 0;
 static TickType_t s_last_deeper_temp_log_tick = 0;
+static TickType_t s_last_fc_heartbeat_tick = 0;
 static bool s_sonar_task_missing_logged = false;
 static uint8_t s_sonar_publish_buffer[296];
 static fmav_status_t s_sonar_mav_status = {0};
@@ -299,8 +304,7 @@ static void db_publish_active_sonar_distance(void) {
 
   uint16_t len = fmav_msg_distance_sensor_encode_to_frame_buf(
       s_sonar_publish_buffer, db_get_mav_sys_id() == 0 ? 1 : db_get_mav_sys_id(),
-      191, // MAV_COMP_ID_GIMBAL or MAV_COMP_ID_PERIPHERAL
-      &payload, &s_sonar_mav_status);
+      DB_MAVLINK_ESP_COMPONENT_ID, &payload, &s_sonar_mav_status);
 
   write_to_serial(s_sonar_publish_buffer, len);
   db_send_to_all_radio_clients(s_sonar_publish_buffer, len);
@@ -337,6 +341,52 @@ static void db_publish_active_sonar_distance(void) {
   }
 }
 
+/**
+ * Emits a MAVLink HEARTBEAT towards the flight controller at ~1 Hz.
+ *
+ * ArduPilot forwards a message to a channel ONLY where it has learned the target lives, and it
+ * learns purely from traffic it observes (MAVLink_routing::learn_route). This firmware otherwise
+ * only listens and injects sensor data, so it used to appear in the FC's routing table solely as
+ * a side effect of a fitted sonar - the hardwired transducer's DISTANCE_SENSOR traffic created
+ * the entry within a second of every boot. With no sonar fitted the entry was never created at
+ * all and the uplink TUNNEL path was silently dead, with no error anywhere.
+ *
+ * The FC's routing table never expires an entry, so one heartbeat per FC boot would technically
+ * be enough. We send continuously anyway: this firmware cannot tell that the FC has rebooted, a
+ * single lost frame would otherwise kill the link for the rest of the session, and the cost is
+ * ~21 bytes per second.
+ *
+ * MAV_TYPE_GENERIC is deliberate. MAV_TYPE_ONBOARD_CONTROLLER would create the same routing
+ * entry, but Rover looks that type up (find_by_mavtype, in ModeAuto::send_guided_position_target)
+ * to choose the offboard navigation computer for NAV_GUIDED_ENABLE missions. Nothing here wants
+ * that role, and GENERIC claims nothing while working identically.
+ *
+ * Serial only: the FC forwards broadcast heartbeats to its other channels itself, so also sending
+ * this to the Wi-Fi clients would show the ground station a duplicate.
+ */
+static void db_publish_heartbeat_to_fc_if_due(void) {
+  if (DB_PARAM_SERIAL_PROTO != DB_SERIAL_PROTOCOL_MAVLINK) {
+    return;
+  }
+
+  TickType_t now_tick = xTaskGetTickCount();
+  if (s_last_fc_heartbeat_tick != 0 &&
+      (now_tick - s_last_fc_heartbeat_tick) <
+          pdMS_TO_TICKS(DB_MAVLINK_FC_HEARTBEAT_PERIOD_MS)) {
+    return;
+  }
+
+  // Not gated on having heard from the FC: the whole point is to be in its routing table as
+  // early as possible after any FC boot, so fall back to system 1 until its id is known.
+  uint16_t len = fmav_msg_heartbeat_pack_to_frame_buf(
+      s_sonar_publish_buffer, db_get_mav_sys_id() == 0 ? 1 : db_get_mav_sys_id(),
+      DB_MAVLINK_ESP_COMPONENT_ID, MAV_TYPE_GENERIC, MAV_AUTOPILOT_INVALID, 0, 0,
+      MAV_STATE_ACTIVE, &s_sonar_mav_status);
+
+  write_to_serial(s_sonar_publish_buffer, len);
+  s_last_fc_heartbeat_tick = now_tick;
+}
+
 static void db_publish_deeper_temperature_if_due(void) {
   if (DB_PARAM_SERIAL_PROTO != DB_SERIAL_PROTOCOL_MAVLINK ||
       DB_ACTIVE_SONAR_SOURCE != DB_SONAR_SOURCE_DEEPER) {
@@ -363,7 +413,7 @@ static void db_publish_deeper_temperature_if_due(void) {
 
   uint16_t len = fmav_msg_named_value_float_encode_to_frame_buf(
       s_sonar_publish_buffer, db_get_mav_sys_id() == 0 ? 1 : db_get_mav_sys_id(),
-      191, &payload, &s_sonar_mav_status);
+      DB_MAVLINK_ESP_COMPONENT_ID, &payload, &s_sonar_mav_status);
 
   write_to_serial(s_sonar_publish_buffer, len);
   db_send_to_all_radio_clients(s_sonar_publish_buffer, len);
@@ -385,6 +435,9 @@ static void db_mavlink_sonar_publish_task(void *arg) {
   ESP_LOGI(TAG, "Starting dedicated sonar MAVLink publish task.");
   while (1) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    // Heartbeat first: it is what keeps the FC's route to this component alive, and it must not
+    // depend on a sonar being fitted or on any of the publishers below producing data.
+    db_publish_heartbeat_to_fc_if_due();
     db_publish_active_sonar_distance();
     db_publish_deeper_temperature_if_due();
   }
