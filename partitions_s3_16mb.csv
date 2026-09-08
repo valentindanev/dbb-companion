@@ -61,4 +61,13 @@ coredump, data, coredump, 0x930000,  512K,
 db_a,     data, 0x40,     0x9b0000,  128K,
 db_b,     data, 0x41,     0x9d0000,  128K,
 diag,     data, 0x42,     0x9f0000,  512K,
+# LOGS FILESYSTEM - READ BEFORE "CORRECTING" THE SUBTYPE BELOW
+#   The subtype cell says `fat` but the partition holds **LittleFS**
+#   (CONFIG_DB_LOG_STORAGE_LITTLEFS). esp_littlefs matches the partition BY LABEL
+#   with ESP_PARTITION_SUBTYPE_ANY, so the cell text does not affect mounting.
+#   It is deliberately left as `fat`: the partition table lives at 0x20000 and
+#   standard OTA never writes it, so changing this cell would force a serial
+#   flash - i.e. opening a boat that is soldered into its hull, for a label.
+#   Owner decision 08-09-2026: the table is LOCKED. Nothing here moves, resizes
+#   or is added. db_sonar_log.c is the authority on what this partition holds.
 logs,     data, fat,      0xa70000,  5696K,

@@ -17,18 +17,37 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
-#ifdef CONFIG_DB_LOG_STORAGE_FATFS
+#if defined(CONFIG_DB_LOG_STORAGE_LITTLEFS)
+#include "esp_littlefs.h"
+#elif defined(CONFIG_DB_LOG_STORAGE_FATFS)
 #include "esp_vfs_fat.h"
 #include "wear_levelling.h"
 #else
 #include "esp_spiffs.h"
 #endif
+#include "nvs.h"
+#include "nvs_flash.h"
+#include <unistd.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #define DB_LOG_LINE_MAX 512U
 #define DB_LOG_IO_BUFFER 1024U
+/* Durability, copied from ArduPilot rather than invented - see the block
+ * comment above the file-slot helpers. 4096 matches both AP's MAX_IO_SIZE and
+ * the LittleFS block size we mount with. */
+#define DB_LOG_SYNC_BLOCK_BYTES 4096U
+/* An idle stream must not hold unsynced data indefinitely. Owner decision
+ * 08-09-2026: 5 s. The boat is parked at the bank and the radio put down
+ * before power is pulled, so the last 5 s is always idle time. */
+#define DB_LOG_SYNC_IDLE_MS 5000U
+/* Usage was refreshed on EVERY append, i.e. a whole-filesystem walk per log
+ * line. Once per second is ample: the smallest reserve is 256 KiB and the
+ * measured write rate is ~500 B/s. */
+#define DB_LOG_USAGE_REFRESH_MS 1000U
+#define DB_LOG_NVS_NAMESPACE "dbb_log"
+#define DB_LOG_NVS_NEXT_SESSION "next_sess"
 #define DB_LOG_SYSTEM_LIMIT_BYTES (256U * 1024U)
 #define DB_LOG_SYSTEM_TRIM_BYTES (192U * 1024U)
 #define DB_LOG_HEADROOM_BYTES (256U * 1024U)
@@ -99,6 +118,7 @@ static wl_handle_t g_log_wl_handle = WL_INVALID_HANDLE;
 
 static char g_line_buffer[DB_LOG_LINE_MAX];
 static char g_io_buffer[DB_LOG_IO_BUFFER];
+static uint32_t g_last_usage_refresh_ms;
 /* Field diagnosis: first/last write failure on the append path. */
 static int g_last_write_errno;
 static uint32_t g_last_write_fail_stage; /* 1=prepare 2=fopen 3=fwrite 4=init_create */
@@ -196,6 +216,28 @@ void db_sonar_log_get_crash_diag(db_sonar_log_crash_diag_t *diag) {
       g_log_rtc_diag.min_stack == UINT32_MAX ? 0 : g_log_rtc_diag.min_stack;
 }
 
+/* The session counter used to be derived purely from what was on disk
+ * (max_id + 1). Eviction therefore made it run BACKWARDS and ids got reused -
+ * which is why the 08-09-2026 recovery found two different generations of
+ * sessions 1-5 on one partition and had to date them by position rather than
+ * by number. Persist it, and never go back. */
+static uint32_t db_log_nvs_load_next_session(void) {
+  nvs_handle_t handle;
+  if (nvs_open(DB_LOG_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return 0;
+  uint32_t value = 0;
+  if (nvs_get_u32(handle, DB_LOG_NVS_NEXT_SESSION, &value) != ESP_OK) value = 0;
+  nvs_close(handle);
+  return value;
+}
+
+static void db_log_nvs_store_next_session(uint32_t value) {
+  nvs_handle_t handle;
+  if (nvs_open(DB_LOG_NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) return;
+  if (nvs_set_u32(handle, DB_LOG_NVS_NEXT_SESSION, value) == ESP_OK)
+    (void)nvs_commit(handle);
+  nvs_close(handle);
+}
+
 static void db_log_init_mutex(void) {
   if (g_log_mutex == NULL) g_log_mutex = xSemaphoreCreateMutex();
 }
@@ -242,7 +284,16 @@ static bool db_log_parse_session_name(const char *name, char required_prefix,
 
 static esp_err_t db_log_refresh_usage_locked(void) {
   if (!g_log_available) return ESP_ERR_INVALID_STATE;
-#ifdef CONFIG_DB_LOG_STORAGE_FATFS
+#if defined(CONFIG_DB_LOG_STORAGE_LITTLEFS)
+  size_t total = 0;
+  size_t used = 0;
+  esp_err_t err = esp_littlefs_info(DB_SONAR_LOG_PARTITION_LABEL, &total, &used);
+  if (err == ESP_OK) {
+    g_partition_total = total;
+    g_partition_used = used;
+    g_partition_free = total > used ? total - used : 0;
+  }
+#elif defined(CONFIG_DB_LOG_STORAGE_FATFS)
   uint64_t total = 0;
   uint64_t free_bytes = 0;
   esp_err_t err =
@@ -268,6 +319,126 @@ static esp_err_t db_log_refresh_usage_locked(void) {
 
 /* Sum of every file the directory can still name. Compared against
  * g_partition_used, this is the orphaned-cluster detector. */
+/* --- Durable append path ---------------------------------------------------
+ *
+ * Files are held OPEN for the life of a session and fsynced ON BLOCK
+ * BOUNDARIES, never mid-block. This is ArduPilot's shape, copied rather than
+ * invented:
+ *
+ *   AP_Logger_File.cpp:990-1024      hold the fd; truncate the write so the
+ *                                    fsync lands exactly on the boundary
+ *   AP_Filesystem_FATFS.cpp:693      bytes_until_fsync = block - (pos % block)
+ *   AP_Filesystem_FlashMemory_LittleFS.cpp:
+ *       "LittleFS needs to copy the block contents to a new one if fsync is
+ *        called in the middle of a block. LittleFS also is guaranteed to not
+ *        remember any file contents until fsync is called!"
+ *
+ * What this replaces: an fopen/fwrite/fclose PER LOG LINE, i.e. one filesystem
+ * metadata commit per line. Measured on the 04-09-2026 mapping session that
+ * was ~7 commits/s (NMEA 5.3 + trip 1.0 + track 0.67) against ArduPilot's
+ * 0.11/s for the same byte rate. Every one of those commits was a window in
+ * which a power cut could strand a cluster chain - the fault that lost 3.29 MB
+ * on 23-08-2026 and 2.50 MB by 08-09-2026.
+ *
+ * The trade, stated plainly: a power cut now loses up to the last UNSYNCED
+ * BLOCK instead of the last LINE. Bounded, known loss in place of unbounded,
+ * silent volume loss. */
+typedef struct {
+  FILE *fp;
+  uint32_t last_sync_ms;
+  bool dirty;
+} db_log_file_slot_t;
+
+/* Indexed by db_log_stream_t; LEGACY is never appended so it needs no slot. */
+static db_log_file_slot_t g_log_files[DB_LOG_STREAM_DEEPER + 1];
+
+static db_log_file_slot_t *db_log_slot(db_log_stream_t stream) {
+  if ((int)stream < 0 || (int)stream > (int)DB_LOG_STREAM_DEEPER) return NULL;
+  return &g_log_files[(int)stream];
+}
+
+static void db_log_sync_slot(db_log_file_slot_t *slot) {
+  if (slot == NULL || slot->fp == NULL || !slot->dirty) return;
+  if (fflush(slot->fp) == 0) {
+    int fd = fileno(slot->fp);
+    if (fd >= 0) (void)fsync(fd);
+  }
+  slot->dirty = false;
+  slot->last_sync_ms = db_log_now_ms();
+}
+
+static void db_log_close_slot(db_log_file_slot_t *slot) {
+  if (slot == NULL || slot->fp == NULL) return;
+  db_log_sync_slot(slot);
+  fclose(slot->fp);
+  slot->fp = NULL;
+  slot->dirty = false;
+}
+
+static void db_log_close_all_slots_locked(void) {
+  for (int i = 0; i <= (int)DB_LOG_STREAM_DEEPER; ++i)
+    db_log_close_slot(&g_log_files[i]);
+}
+
+static void db_log_close_session_slots_locked(void) {
+  for (int i = (int)DB_LOG_STREAM_TRIP; i <= (int)DB_LOG_STREAM_DEEPER; ++i)
+    db_log_close_slot(&g_log_files[i]);
+}
+
+static void db_log_sync_all_slots_locked(void) {
+  for (int i = 0; i <= (int)DB_LOG_STREAM_DEEPER; ++i)
+    db_log_sync_slot(&g_log_files[i]);
+}
+
+/* ArduPilot AP_Filesystem_*::bytes_until_fsync(). Returns 1..BLOCK. */
+static uint32_t db_log_bytes_until_sync(FILE *fp) {
+  long pos = ftell(fp);
+  if (pos < 0) return 0;
+  return DB_LOG_SYNC_BLOCK_BYTES -
+         ((uint32_t)pos % DB_LOG_SYNC_BLOCK_BYTES);
+}
+
+/* Write, splitting at the block boundary so every sync lands ON it. */
+static bool db_log_write_slot(db_log_file_slot_t *slot, const char *data,
+                              size_t length) {
+  while (length > 0) {
+    uint32_t until = db_log_bytes_until_sync(slot->fp);
+    size_t chunk = length;
+    bool at_boundary = false;
+    if (until > 0 && chunk >= (size_t)until) {
+      chunk = (size_t)until;
+      at_boundary = true;
+    }
+    if (fwrite(data, 1, chunk, slot->fp) != chunk) return false;
+    slot->dirty = true;
+    data += chunk;
+    length -= chunk;
+    if (at_boundary) db_log_sync_slot(slot);
+  }
+  return true;
+}
+
+/* The idle floor: a stream that stops producing must still reach flash. */
+static void db_log_sync_idle_slots_locked(void) {
+  uint32_t now = db_log_now_ms();
+  for (int i = 0; i <= (int)DB_LOG_STREAM_DEEPER; ++i) {
+    db_log_file_slot_t *slot = &g_log_files[i];
+    if (slot->fp != NULL && slot->dirty &&
+        now - slot->last_sync_ms >= DB_LOG_SYNC_IDLE_MS)
+      db_log_sync_slot(slot);
+  }
+}
+
+/* SYSTEM.LOG size with the handle held open: stat() lags unsynced bytes, so
+ * prefer the stream position when we have it. */
+static size_t db_log_system_bytes_locked(const db_log_file_slot_t *slot) {
+  if (slot != NULL && slot->fp != NULL) {
+    long pos = ftell(slot->fp);
+    if (pos >= 0) return (size_t)pos;
+  }
+  return db_log_file_size(DB_LOG_SYSTEM_PATH);
+}
+
 static size_t db_log_visible_bytes_locked(void) {
   DIR *dir = opendir(DB_SONAR_LOG_MOUNT_POINT);
   if (dir == NULL) return 0;
@@ -327,8 +498,20 @@ static uint32_t db_log_oldest_completed_session_locked(void) {
 }
 
 static esp_err_t db_log_prepare_space_locked(size_t incoming_bytes) {
-  esp_err_t err = db_log_refresh_usage_locked();
-  if (err != ESP_OK) return err;
+  /* Refresh at most DB_LOG_USAGE_REFRESH_MS apart, or whenever the cached
+   * figure says we are near the reserves - a whole-filesystem walk per log
+   * line is not affordable on LittleFS and was never necessary on FAT. */
+  uint32_t now_ms = db_log_now_ms();
+  esp_err_t err = ESP_OK;
+  if (g_last_usage_refresh_ms == 0 ||
+      (now_ms - g_last_usage_refresh_ms) >= DB_LOG_USAGE_REFRESH_MS ||
+      g_partition_free <
+          db_log_required_free_locked() + incoming_bytes +
+              (size_t)DB_LOG_SYNC_BLOCK_BYTES) {
+    err = db_log_refresh_usage_locked();
+    if (err != ESP_OK) return err;
+    g_last_usage_refresh_ms = now_ms;
+  }
   size_t required = db_log_required_free_locked();
   uint32_t last_evicted = 0;
   while (g_partition_free < required + incoming_bytes) {
@@ -351,6 +534,9 @@ static esp_err_t db_log_prepare_space_locked(size_t incoming_bytes) {
 }
 
 static esp_err_t db_log_compact_system_locked(void) {
+  /* The handle is held open now; remove()+rename() underneath it would leave
+   * a dangling stream. Close, compact, and let the next append reopen. */
+  db_log_close_slot(&g_log_files[DB_LOG_STREAM_SYSTEM]);
   FILE *source = fopen(DB_LOG_SYSTEM_PATH, "rb");
   if (source == NULL) return ESP_OK;
   FILE *tmp = fopen(DB_LOG_SYSTEM_TMP_PATH, "wb");
@@ -387,10 +573,13 @@ static esp_err_t db_log_compact_system_locked(void) {
 static esp_err_t db_log_append_line_locked(db_log_stream_t stream,
                                            const char *line) {
   if (!g_log_available || line == NULL) return ESP_ERR_INVALID_STATE;
+  db_log_file_slot_t *slot = db_log_slot(stream);
+  if (slot == NULL) return ESP_ERR_INVALID_ARG;
   char path[40];
   if (stream == DB_LOG_STREAM_SYSTEM) {
     snprintf(path, sizeof(path), "%s", DB_LOG_SYSTEM_PATH);
-    if (db_log_file_size(path) + strlen(line) + 1 > DB_LOG_SYSTEM_LIMIT_BYTES) {
+    if (db_log_system_bytes_locked(slot) + strlen(line) + 1 >
+        DB_LOG_SYSTEM_LIMIT_BYTES) {
       esp_err_t compact_err = db_log_compact_system_locked();
       if (compact_err != ESP_OK) return compact_err;
     }
@@ -408,24 +597,28 @@ static esp_err_t db_log_append_line_locked(db_log_stream_t stream,
     return err;
   }
   db_log_diag_mark(DB_LOG_STAGE_APPEND_SPACE_READY);
-  errno = 0;
-  FILE *fp = fopen(path, "ab");
-  if (fp == NULL) {
-    g_last_write_errno = errno;
-    g_last_write_fail_stage = 2;
-    return ESP_FAIL;
+  if (slot->fp == NULL) {
+    errno = 0;
+    slot->fp = fopen(path, "ab");
+    if (slot->fp == NULL) {
+      g_last_write_errno = errno;
+      g_last_write_fail_stage = 2;
+      return ESP_FAIL;
+    }
+    slot->dirty = false;
+    slot->last_sync_ms = db_log_now_ms();
   }
   db_log_diag_mark(DB_LOG_STAGE_APPEND_FILE_OPEN);
   errno = 0;
-  bool ok = fwrite(line, 1, length, fp) == length && fputc('\n', fp) != EOF;
+  bool ok = db_log_write_slot(slot, line, length) &&
+            db_log_write_slot(slot, "\n", 1);
   if (!ok) {
     g_last_write_errno = errno;
     g_last_write_fail_stage = 3;
   }
   db_log_diag_mark(DB_LOG_STAGE_APPEND_LINE_WRITTEN);
-  fclose(fp);
+  db_log_sync_idle_slots_locked();
   db_log_diag_mark(DB_LOG_STAGE_APPEND_FILE_CLOSED);
-  db_log_refresh_usage_locked();
   db_log_diag_mark(DB_LOG_STAGE_APPEND_USAGE_REFRESHED);
   db_log_diag_mark(DB_LOG_STAGE_IDLE);
   return ok ? ESP_OK : ESP_FAIL;
@@ -488,6 +681,7 @@ static esp_err_t db_log_start_session_locked(const char *reason) {
   if (g_next_session_id == 0 || g_next_session_id > 9999999U)
     g_next_session_id = 1;
   g_session_id = g_next_session_id++;
+  db_log_nvs_store_next_session(g_next_session_id);
   g_session_active = true;
   g_session_start_ms = db_log_now_ms();
   g_last_trip_tick_ms = 0;
@@ -525,11 +719,19 @@ static void db_log_append_final_line_locked(db_log_stream_t stream,
                                        true)) {
     return;
   }
-  FILE *fp = fopen(path, "ab");
-  if (fp == NULL) return;
+  db_log_file_slot_t *slot = db_log_slot(stream);
+  if (slot == NULL) return;
+  if (slot->fp == NULL) {
+    slot->fp = fopen(path, "ab");
+    if (slot->fp == NULL) return;
+    slot->dirty = false;
+    slot->last_sync_ms = db_log_now_ms();
+  }
   size_t length = strlen(line);
-  if (fwrite(line, 1, length, fp) == length) (void)fputc('\n', fp);
-  fclose(fp);
+  if (db_log_write_slot(slot, line, length)) (void)db_log_write_slot(slot, "\n", 1);
+  /* Session-end evidence is the one line that must be on flash before the
+   * rename that follows it. */
+  db_log_sync_slot(slot);
 }
 
 static void db_log_finish_session_locked(const char *reason) {
@@ -542,6 +744,10 @@ static void db_log_finish_session_locked(const char *reason) {
            reason == NULL ? "unknown" : reason,
            (unsigned long)(now - g_session_start_ms), g_session_distance_m);
   db_log_append_final_line_locked(DB_LOG_STREAM_TRIP, g_line_buffer);
+
+  /* Every session handle must be synced and closed BEFORE the .TMP -> .LOG
+   * rename, or the rename happens under a live stream. */
+  db_log_close_session_slots_locked();
 
   char from[40];
   char to[40];
@@ -598,7 +804,11 @@ static uint32_t db_log_recover_and_find_next_locked(void) {
     }
   }
   closedir(dir);
-  g_next_session_id = max_id >= 9999999U ? 1 : max_id + 1;
+  uint32_t from_disk = max_id >= 9999999U ? 1 : max_id + 1;
+  uint32_t from_nvs = db_log_nvs_load_next_session();
+  g_next_session_id = from_nvs > from_disk ? from_nvs : from_disk;
+  if (g_next_session_id == 0 || g_next_session_id > 9999999U)
+    g_next_session_id = 1;
   return recovered;
 }
 
@@ -613,7 +823,19 @@ esp_err_t db_sonar_log_init(void) {
     xSemaphoreGive(g_log_mutex);
     return ESP_OK;
   }
-#ifdef CONFIG_DB_LOG_STORAGE_FATFS
+#if defined(CONFIG_DB_LOG_STORAGE_LITTLEFS)
+  /* The partition is matched BY LABEL with ESP_PARTITION_SUBTYPE_ANY, so the
+   * `logs` entry keeps its `data, fat` cell in partitions_s3_16mb.csv and the
+   * partition table is never reflashed - which is what keeps this change
+   * OTA-only. Owner decision 08-09-2026: the table is LOCKED. */
+  esp_vfs_littlefs_conf_t config = {
+      .base_path = DB_SONAR_LOG_MOUNT_POINT,
+      .partition_label = DB_SONAR_LOG_PARTITION_LABEL,
+      .format_if_mount_failed = true,
+      .dont_mount = false,
+  };
+  esp_err_t err = esp_vfs_littlefs_register(&config);
+#elif defined(CONFIG_DB_LOG_STORAGE_FATFS)
   esp_vfs_fat_mount_config_t config = {
       .format_if_mount_failed = true,
       .max_files = 10,
@@ -775,6 +997,7 @@ esp_err_t db_sonar_log_list_sessions(db_sonar_log_session_info_t *sessions,
   db_log_init_mutex();
   if (g_log_mutex == NULL) return ESP_ERR_NO_MEM;
   xSemaphoreTake(g_log_mutex, portMAX_DELAY);
+  db_log_sync_all_slots_locked();
   if (!g_log_available) {
     xSemaphoreGive(g_log_mutex);
     return ESP_ERR_INVALID_STATE;
@@ -790,6 +1013,7 @@ esp_err_t db_sonar_log_get_status(db_sonar_log_status_t *status) {
   db_log_init_mutex();
   if (g_log_mutex == NULL) return ESP_ERR_NO_MEM;
   xSemaphoreTake(g_log_mutex, portMAX_DELAY);
+  db_log_sync_all_slots_locked();
   if (g_log_available) {
     db_log_refresh_usage_locked();
     status->mounted = true;
@@ -860,6 +1084,8 @@ static bool db_log_resolve_stream_path_locked(char *path, size_t path_size,
   return true;
 }
 
+/* A download of an ACTIVE session must not miss bytes that are still sitting
+ * in an unsynced block, so flush every slot before any read path runs. */
 esp_err_t db_sonar_log_stream(db_log_stream_t stream, uint32_t session_id,
                               db_sonar_log_chunk_writer_t writer, void *user_ctx,
                               size_t *out_bytes_streamed, int *out_file_errno) {
@@ -869,6 +1095,7 @@ esp_err_t db_sonar_log_stream(db_log_stream_t stream, uint32_t session_id,
   db_log_init_mutex();
   if (g_log_mutex == NULL) return ESP_ERR_NO_MEM;
   xSemaphoreTake(g_log_mutex, portMAX_DELAY);
+  db_log_sync_all_slots_locked();
   if (!g_log_available) {
     xSemaphoreGive(g_log_mutex);
     return ESP_ERR_INVALID_STATE;
@@ -929,7 +1156,8 @@ esp_err_t db_sonar_log_delete_session(uint32_t session_id) {
  * Destroys every log on the volume - callers are expected to have pulled
  * /api/logs/raw/download first. */
 esp_err_t db_sonar_log_format_volume(void) {
-#ifndef CONFIG_DB_LOG_STORAGE_FATFS
+#if !defined(CONFIG_DB_LOG_STORAGE_FATFS) && \
+    !defined(CONFIG_DB_LOG_STORAGE_LITTLEFS)
   return ESP_ERR_NOT_SUPPORTED;
 #else
   db_log_init_mutex();
@@ -939,8 +1167,14 @@ esp_err_t db_sonar_log_format_volume(void) {
     xSemaphoreGive(g_log_mutex);
     return ESP_ERR_INVALID_STATE;
   }
+  /* Nothing may be holding a handle across a format. */
+  db_log_close_all_slots_locked();
+#if defined(CONFIG_DB_LOG_STORAGE_LITTLEFS)
+  esp_err_t err = esp_littlefs_format(DB_SONAR_LOG_PARTITION_LABEL);
+#else
   esp_err_t err = esp_vfs_fat_spiflash_format_rw_wl(
       DB_SONAR_LOG_MOUNT_POINT, DB_SONAR_LOG_PARTITION_LABEL);
+#endif
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Logs volume format failed (%s)", esp_err_to_name(err));
     xSemaphoreGive(g_log_mutex);
@@ -979,6 +1213,7 @@ esp_err_t db_sonar_log_clear_all(void) {
     xSemaphoreGive(g_log_mutex);
     return ESP_ERR_INVALID_STATE;
   }
+  db_log_close_all_slots_locked();
   DIR *dir = opendir(DB_SONAR_LOG_MOUNT_POINT);
   if (dir != NULL) {
     struct dirent *entry;
@@ -1059,6 +1294,9 @@ void db_sonar_log_tick(void) {
   db_mavlink_get_telemetry(&g_tick_telemetry);
   uint32_t now = db_log_now_ms();
   xSemaphoreTake(g_log_mutex, portMAX_DELAY);
+  /* The idle floor has to run even when nothing is being appended - otherwise
+   * a stream that stops producing keeps its last block unsynced forever. */
+  db_log_sync_idle_slots_locked();
   if (g_manual_until_ms != 0 && (int32_t)(now - g_manual_until_ms) >= 0) {
     g_manual_until_ms = 0;
     if (g_session_active && !g_armed_capture) {

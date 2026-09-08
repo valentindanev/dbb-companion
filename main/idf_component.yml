@@ -1,6 +1,10 @@
 ## IDF Component Manager Manifest File
 dependencies:
   # espressif/mavlink: "^1.0.0~1"
+  # LittleFS for the `logs` partition: power-fail-safe metadata commits, and it
+  # does its own wear levelling, so the ESP-IDF WL layer is bypassed. Version
+  # pinned to the one ESP-IDF 5.4.3 ships in examples/storage/littlefs.
+  joltwallet/littlefs: "~=1.14.8"
   espressif/button: "^4.1.3"
   espressif/mdns: "^1.8.2"
   # USB CDC-ACM host: lets the companion drive the flight controller's USB port

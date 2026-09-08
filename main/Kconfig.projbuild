@@ -111,14 +111,47 @@ menu "DroneBridge for ESP32 Configuration"
         help
             Specify the mount point in VFS.
 
-    config DB_LOG_STORAGE_FATFS
-        bool "Use FATFS with wear levelling for persistent logs"
-        default y if IDF_TARGET_ESP32S3
-        default n
+    choice DB_LOG_STORAGE
+        prompt "Persistent log storage backend"
+        default DB_LOG_STORAGE_LITTLEFS if IDF_TARGET_ESP32S3
+        default DB_LOG_STORAGE_SPIFFS
         help
-            Store persistent sonar logs in the partition labelled logs using
-            FATFS and the ESP-IDF wear-levelling layer. Leave disabled for the
-            legacy SPIFFS logs layout.
+            Filesystem used for the partition labelled logs.
+
+        config DB_LOG_STORAGE_LITTLEFS
+            bool "LittleFS - power-fail safe (recommended)"
+            help
+                Store persistent logs using LittleFS on the partition labelled
+                logs. LittleFS commits metadata atomically into CRC-protected
+                metadata pairs, so a power cut leaves the previous valid state
+                instead of stranding cluster chains: the orphaned-cluster
+                failure mode does not exist. It also performs its own wear
+                levelling directly on the partition, bypassing the ESP-IDF
+                wear-levelling layer entirely.
+
+                The partition is matched BY LABEL with ESP_PARTITION_SUBTYPE_ANY,
+                so the partition table needs no change and the boat never has to
+                be opened for a serial flash. See partitions_s3_16mb.csv.
+
+        config DB_LOG_STORAGE_FATFS
+            bool "FATFS with wear levelling - LEGACY, not power-fail safe"
+            help
+                The original layout: FATFS over the ESP-IDF wear-levelling layer.
+
+                Kept only as a rollback. FAT has no journal, so a power cut
+                during a metadata commit can strand cluster chains that nothing
+                ever reclaims, and a cut during a wear-level sector move can
+                erase FAT root-directory sectors outright (field-diagnosed
+                20-08-2026; see db_sonar_log.c). ESP-IDF's power-safe
+                WL_SECTOR_MODE_SAFE depends on WL_SECTOR_SIZE_512, which this
+                build does not use, so no safe mode is available here.
+
+        config DB_LOG_STORAGE_SPIFFS
+            bool "SPIFFS - legacy"
+            help
+                The pre-FATFS layout. Retained for non-ESP32-S3 targets.
+
+    endchoice
 
     config DB_DIAG_JOURNAL
         bool "Use the dedicated persistent diagnostic journal"
