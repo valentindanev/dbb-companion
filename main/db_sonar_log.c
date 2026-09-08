@@ -349,7 +349,7 @@ typedef struct {
   bool dirty;
 } db_log_file_slot_t;
 
-/* Indexed by db_log_stream_t; LEGACY is never appended so it needs no slot. */
+/* Indexed by db_log_stream_t. */
 static db_log_file_slot_t g_log_files[DB_LOG_STREAM_DEEPER + 1];
 
 static db_log_file_slot_t *db_log_slot(db_log_stream_t stream) {
@@ -1031,7 +1031,6 @@ esp_err_t db_sonar_log_get_status(db_sonar_log_status_t *status) {
             ? g_partition_total - DB_FC_FLASH_RESERVE_BYTES - DB_FC_PARAM_RESERVE_BYTES -
                   DB_LOG_HEADROOM_BYTES - DB_LOG_SYSTEM_LIMIT_BYTES
             : 0;
-    status->legacy_log_bytes = db_log_file_size(DB_SONAR_LOG_LEGACY_PATH);
     /* Counted from a full directory scan - the 24-entry listing the UI shows
      * is a window, and the real on-disk count can exceed it. */
     DIR *dir = opendir(DB_SONAR_LOG_MOUNT_POINT);
@@ -1069,10 +1068,6 @@ static bool db_log_resolve_stream_path_locked(char *path, size_t path_size,
                                               uint32_t session_id) {
   if (stream == DB_LOG_STREAM_SYSTEM) {
     snprintf(path, path_size, "%s", DB_LOG_SYSTEM_PATH);
-    return true;
-  }
-  if (stream == DB_LOG_STREAM_LEGACY) {
-    snprintf(path, path_size, "%s", DB_SONAR_LOG_LEGACY_PATH);
     return true;
   }
   bool active = g_session_active && session_id == g_session_id;
@@ -1235,7 +1230,6 @@ esp_err_t db_sonar_log_clear_all(void) {
   }
   remove(DB_LOG_SYSTEM_PATH);
   remove(DB_LOG_SYSTEM_TMP_PATH);
-  remove(DB_SONAR_LOG_LEGACY_PATH);
   FILE *system = fopen(DB_LOG_SYSTEM_PATH, "wb");
   if (system != NULL) fclose(system);
   g_evicted_sessions = 0;

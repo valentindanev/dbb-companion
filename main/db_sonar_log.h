@@ -14,8 +14,7 @@
  *   unfilled part of the 1536 KiB FC-image reserve (db_fc_flash) are kept
  *   free by evicting the OLDEST COMPLETED session as a unit. The active
  *   session is never trimmed; if space runs out with only the active session
- *   left, capture closes instead. /logs/sonar.log is the frozen pre-rework
- *   legacy stream: readable/deletable, never appended.
+ *   left, capture closes instead.
  * - Locking: one mutex serializes every append, status, list, delete and
  *   stream read. db_sonar_log_stream() holds it for the WHOLE transfer, so
  *   a slow HTTP client stalls all logging and the sonar publish path for the
@@ -38,7 +37,6 @@
 
 #define DB_SONAR_LOG_PARTITION_LABEL "logs"
 #define DB_SONAR_LOG_MOUNT_POINT "/logs"
-#define DB_SONAR_LOG_LEGACY_PATH DB_SONAR_LOG_MOUNT_POINT "/sonar.log"
 #define DB_SONAR_LOG_MAX_SESSIONS 24U
 /* Session files are named session-%07lu, so ids above this cannot name a valid
  * file. Requests beyond it are malformed (400), not server faults (500). */
@@ -49,7 +47,6 @@ typedef enum {
   DB_LOG_STREAM_TRIP = 1,
   DB_LOG_STREAM_HARDWIRED = 2,
   DB_LOG_STREAM_DEEPER = 3,
-  DB_LOG_STREAM_LEGACY = 4,
 } db_log_stream_t;
 
 typedef struct {
@@ -62,7 +59,6 @@ typedef struct {
   size_t system_log_bytes;
   size_t system_log_limit_bytes;
   size_t session_pool_limit_bytes;
-  size_t legacy_log_bytes;
   uint32_t completed_session_count;
   uint32_t evicted_session_count;
   bool session_active;

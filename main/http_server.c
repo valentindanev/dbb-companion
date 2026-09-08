@@ -1737,8 +1737,6 @@ static esp_err_t sonar_log_status_get_handler(httpd_req_t *req) {
                             status.system_log_limit_bytes);
     cJSON_AddNumberToObject(root, "session_pool_limit_bytes",
                             status.session_pool_limit_bytes);
-    cJSON_AddNumberToObject(root, "legacy_log_bytes",
-                            status.legacy_log_bytes);
     cJSON_AddNumberToObject(root, "completed_session_count",
                             status.completed_session_count);
     cJSON_AddNumberToObject(root, "evicted_session_count",
@@ -1819,7 +1817,6 @@ static bool sonar_log_stream_from_name(const char *name,
     else if (strcmp(name, "trip") == 0) *stream = DB_LOG_STREAM_TRIP;
     else if (strcmp(name, "hardwired") == 0) *stream = DB_LOG_STREAM_HARDWIRED;
     else if (strcmp(name, "deeper") == 0) *stream = DB_LOG_STREAM_DEEPER;
-    else if (strcmp(name, "legacy") == 0) *stream = DB_LOG_STREAM_LEGACY;
     else return false;
     return true;
 }
@@ -1874,7 +1871,7 @@ static esp_err_t sonar_log_file_get_handler(httpd_req_t *req) {
     sonar_log_http_stream_context_t context = {
         .req = req, .disposition = NULL, .header_sent = false};
     if (download_text[0] == '1') {
-        if (stream == DB_LOG_STREAM_SYSTEM || stream == DB_LOG_STREAM_LEGACY)
+        if (stream == DB_LOG_STREAM_SYSTEM)
             snprintf(disposition, sizeof(disposition),
                      "attachment; filename=\"%s-log.txt\"", type_name);
         else
