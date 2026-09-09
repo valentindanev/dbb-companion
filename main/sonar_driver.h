@@ -24,16 +24,41 @@
 typedef enum {
   SONAR_MODEL_DYP_L041MTW = 0, /* the original hardwired transducer */
   SONAR_MODEL_AJ_SR04M = 1,    /* AJ-SR04M / JSN-SR04T, UART-triggered mode */
+  SONAR_MODEL_AJ_SR04M_PULSE = 2, /* the same part, as-shipped pulse/echo */
   SONAR_MODEL_COUNT
 } sonar_model_t;
+
+/*
+ * How a reading is acquired. This is the one axis on which the models are NOT
+ * interchangeable: everything else in the descriptor is a number, but the link
+ * decides which peripheral danevi_sonar.c has to set up at init and which half
+ * of the poll loop runs. Adding it here rather than forking the whole
+ * abstraction keeps the filter, the depth store, the staleness logic, the debug
+ * ring and every db_sonar_log_* call shared across all three models.
+ */
+typedef enum {
+  SONAR_LINK_UART = 0,  /* write a trigger byte, read a framed reply */
+  SONAR_LINK_PULSE = 1, /* pulse a trigger pin, measure the echo pin's width */
+} sonar_link_t;
 
 typedef struct {
   const char *name;         /* short id, appears in SYSTEM.LOG as ss_type= */
   const char *display_name; /* human label for the web UI / debug panel */
 
+  sonar_link_t link; /* which acquisition path; UART is the zero default */
+
   uint32_t baud_rate;
   uint8_t trigger_byte; /* 0 = listen-only: send nothing, just read */
   uint8_t frame_size;   /* bytes to read per reply */
+
+  /* PULSE only. Width of the high pulse driven on the trigger pin. ArduPilot
+   * uses 10 us from a 5 V-tolerant autopilot output; a 3.3 V ESP pin driving a
+   * module powered at 5 V is reported to need more, so models may widen it. */
+  uint32_t trigger_pulse_us;
+  /* PULSE only. Longest echo to wait out before declaring the line idle, which
+   * also bounds a no-echo cycle. Must stay under 32767 us - the RMT idle
+   * threshold is 15 bits at the 1 MHz capture resolution. */
+  uint32_t echo_max_us;
 
   /* How long to wait for a reply before calling it a timeout. Must cover the
    * sensor's own no-echo timeout, not just the frame's transmission time. */
@@ -46,16 +71,22 @@ typedef struct {
   /* Age at which a good reading stops being published at all. */
   uint32_t distance_stale_ms;
 
-  /* Decode one frame. Return false if it is not a valid frame of this
-   * protocol (bad header, bad checksum, wrong length). `out_mm` receives the
-   * sensor's own reading, before any scaling. A valid frame reporting 0 mm is
-   * a successful decode of "no echo" - return true with *out_mm = 0. */
+  /* UART only. Decode one frame. Return false if it is not a valid frame of
+   * this protocol (bad header, bad checksum, wrong length). `out_mm` receives
+   * the sensor's own reading, before any scaling. A valid frame reporting 0 mm
+   * is a successful decode of "no echo" - return true with *out_mm = 0. */
   bool (*parse)(const uint8_t *frame, int length, int *out_mm);
 
-  /* Convert the sensor's raw reading into millimetres of water. NULL when the
-   * sensor already reports water millimetres. Must map 0 to 0 so the
-   * no-echo signal survives. */
+  /* UART only. Convert the sensor's raw reading into millimetres of water.
+   * NULL when the sensor already reports water millimetres. Must map 0 to 0 so
+   * the no-echo signal survives. */
   int (*scale_mm)(int raw_mm);
+
+  /* PULSE only. Convert a captured echo width into millimetres of water. Must
+   * map 0 to 0 for the same reason as scale_mm: a no-echo cycle has to reach
+   * the zero-run filter as a real 0, or the zero_frames statistics stop being
+   * comparable with the other two models. */
+  int (*scale_us)(uint32_t echo_us);
 } sonar_driver_t;
 
 /* Returns NULL for an unknown model. */
@@ -66,5 +97,6 @@ const char *sonar_driver_name(sonar_model_t model);
 
 extern const sonar_driver_t sonar_driver_dyp_l041mtw;
 extern const sonar_driver_t sonar_driver_aj_sr04m;
+extern const sonar_driver_t sonar_driver_aj_sr04m_pulse;
 
 #endif // SONAR_DRIVER_H

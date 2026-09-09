@@ -4,6 +4,7 @@
 static const sonar_driver_t *const s_drivers[SONAR_MODEL_COUNT] = {
     [SONAR_MODEL_DYP_L041MTW] = &sonar_driver_dyp_l041mtw,
     [SONAR_MODEL_AJ_SR04M] = &sonar_driver_aj_sr04m,
+    [SONAR_MODEL_AJ_SR04M_PULSE] = &sonar_driver_aj_sr04m_pulse,
 };
 
 const sonar_driver_t *sonar_driver_get(sonar_model_t model) {

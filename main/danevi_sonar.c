@@ -1,11 +1,14 @@
 #include "danevi_sonar.h"
 
 #include "driver/gpio.h"
+#include "driver/rmt_rx.h"
 #include "driver/uart.h"
 #include "db_sonar_log.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "sonar_driver.h"
@@ -15,6 +18,18 @@
 
 #define SONAR_UART_NUM UART_NUM_2
 #define BUF_SIZE 256
+
+/* One microsecond per RMT tick. That is 0.74 mm of water per tick at 1480 m/s,
+ * which is already finer than the 4.25 mm grid the UART path is stuck with, and
+ * it keeps the 15-bit idle threshold worth 32.7 ms - far longer than any echo
+ * this transducer can produce. Raising it would buy resolution we cannot use
+ * and would shrink the idle window we rely on to end a no-echo cycle. */
+#define DANEVI_PULSE_RESOLUTION_HZ 1000000U
+/* Widths below this are ringing on the transducer, not an echo. */
+#define DANEVI_PULSE_GLITCH_NS 1000U
+/* An echo is a single high pulse, so two symbols is already generous. The RMT
+ * hardware requires an even block size and 64 is its minimum on the S3. */
+#define DANEVI_PULSE_SYMBOLS 64
 #define DANEVI_SONAR_TASK_STACK_SIZE 4096
 #define DANEVI_DEBUG_MAX_LINES 8
 #define DANEVI_DEBUG_LINE_MAX 160
@@ -136,8 +151,11 @@ static void danevi_format_frame_bytes(const uint8_t *frame, int length, char *ds
   }
 }
 
+/* `frame`/`length` describe a UART reply; a PULSE model passes frame = NULL and
+ * the captured echo width instead. Both end up as one `detail` string so the
+ * debug ring, SYSTEM.LOG and the rate limiter stay common to every model. */
 static void danevi_log_valid_distance(const uint8_t *frame, int length,
-                                      int distance_mm) {
+                                      uint32_t echo_us, int distance_mm) {
   TickType_t now = xTaskGetTickCount();
   int distance_delta = distance_mm - g_last_logged_distance_mm;
   if (distance_delta < 0) {
@@ -150,15 +168,20 @@ static void danevi_log_valid_distance(const uint8_t *frame, int length,
     return;
   }
 
-  char frame_bytes[DANEVI_DEBUG_LINE_MAX / 2];
-  danevi_format_frame_bytes(frame, length, frame_bytes, sizeof(frame_bytes));
-  ESP_LOGI(TAG, "Hardwired sonar frame len=%d bytes=%s -> %d mm", length,
-           frame_bytes, distance_mm);
+  char detail[DANEVI_DEBUG_LINE_MAX / 2];
+  if (frame != NULL) {
+    char frame_bytes[DANEVI_DEBUG_LINE_MAX / 4];
+    danevi_format_frame_bytes(frame, length, frame_bytes, sizeof(frame_bytes));
+    snprintf(detail, sizeof(detail), "len=%d bytes=%s", length, frame_bytes);
+  } else {
+    snprintf(detail, sizeof(detail), "echo=%lu us", (unsigned long)echo_us);
+  }
+  ESP_LOGI(TAG, "Hardwired sonar reading %s -> %d mm", detail, distance_mm);
   char debug_line[DANEVI_DEBUG_LINE_MAX];
-  snprintf(debug_line, sizeof(debug_line), "[%lu ms] OK len=%d bytes=%s -> %d mm",
-           (unsigned long)danevi_now_ms(), length, frame_bytes, distance_mm);
+  snprintf(debug_line, sizeof(debug_line), "[%lu ms] OK %s -> %d mm",
+           (unsigned long)danevi_now_ms(), detail, distance_mm);
   danevi_store_debug_line(debug_line);
-  db_sonar_log_log_hardwired_frame(distance_mm, length, frame_bytes);
+  db_sonar_log_log_hardwired_frame(distance_mm, length, detail);
   g_last_logged_distance_mm = distance_mm;
   g_last_distance_log_tick = now;
 }
@@ -380,6 +403,134 @@ void danevi_sonar_get_debug_log(char *dst, size_t dst_size) {
   xSemaphoreGive(g_debug_mutex);
 }
 
+/* ---------------------------------------------------------------------------
+ * PULSE link. Drive a short high pulse on the trigger pin, then measure how
+ * long the echo pin stays high. The measurement is done by RMT, not by us: the
+ * peripheral timestamps both edges in hardware, so nothing in this file - task
+ * priority, Wi-Fi interrupts, a busy core - can move the number. That is the
+ * whole reason the 02-09 objection to pulse mode ("100 us of jitter is 7.4 cm")
+ * does not apply. A software timer would deserve that objection; this does not.
+ * ------------------------------------------------------------------------- */
+
+typedef enum {
+  SONAR_READ_OK,       /* a reading, including a legitimate 0 = no echo */
+  SONAR_READ_REJECTED, /* something arrived but it was not usable */
+  SONAR_READ_TIMEOUT,  /* nothing arrived at all */
+} sonar_read_t;
+
+static rmt_channel_handle_t g_echo_channel = NULL;
+static QueueHandle_t g_echo_queue = NULL;
+static rmt_symbol_word_t g_echo_symbols[DANEVI_PULSE_SYMBOLS];
+static int g_trigger_pin = -1;
+
+static bool danevi_echo_done(rmt_channel_handle_t channel,
+                             const rmt_rx_done_event_data_t *edata,
+                             void *user_ctx) {
+  BaseType_t higher_woken = pdFALSE;
+  xQueueSendFromISR((QueueHandle_t)user_ctx, edata, &higher_woken);
+  return higher_woken == pdTRUE;
+}
+
+static bool danevi_pulse_init(int trigger_pin, int echo_pin) {
+  gpio_config_t trigger_cfg = {
+      .pin_bit_mask = 1ULL << (uint32_t)trigger_pin,
+      .mode = GPIO_MODE_OUTPUT,
+      .pull_up_en = GPIO_PULLUP_DISABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  if (gpio_config(&trigger_cfg) != ESP_OK) {
+    ESP_LOGE(TAG, "Sonar trigger GPIO %d could not be configured", trigger_pin);
+    return false;
+  }
+  gpio_set_level((gpio_num_t)trigger_pin, 0);
+
+  g_echo_queue = xQueueCreate(1, sizeof(rmt_rx_done_event_data_t));
+  if (g_echo_queue == NULL) {
+    return false;
+  }
+
+  rmt_rx_channel_config_t echo_cfg = {
+      .gpio_num = (gpio_num_t)echo_pin,
+      .clk_src = RMT_CLK_SRC_DEFAULT,
+      .resolution_hz = DANEVI_PULSE_RESOLUTION_HZ,
+      .mem_block_symbols = DANEVI_PULSE_SYMBOLS,
+  };
+  if (rmt_new_rx_channel(&echo_cfg, &g_echo_channel) != ESP_OK) {
+    ESP_LOGE(TAG, "Sonar echo RMT channel on GPIO %d failed", echo_pin);
+    return false;
+  }
+  rmt_rx_event_callbacks_t callbacks = {.on_recv_done = danevi_echo_done};
+  if (rmt_rx_register_event_callbacks(g_echo_channel, &callbacks,
+                                      g_echo_queue) != ESP_OK) {
+    return false;
+  }
+  if (rmt_enable(g_echo_channel) != ESP_OK) {
+    return false;
+  }
+  g_trigger_pin = trigger_pin;
+  return true;
+}
+
+static sonar_read_t danevi_read_pulse(const sonar_driver_t *driver,
+                                      uint32_t *out_echo_us) {
+  *out_echo_us = 0;
+  if (g_echo_channel == NULL || g_trigger_pin < 0) {
+    return SONAR_READ_TIMEOUT;
+  }
+
+  rmt_receive_config_t receive_cfg = {
+      .signal_range_min_ns = DANEVI_PULSE_GLITCH_NS,
+      .signal_range_max_ns = driver->echo_max_us * 1000U,
+  };
+  /* Arm BEFORE the ping. In shallow water the echo can be back within about a
+   * millisecond, and arming afterwards would race it. */
+  xQueueReset(g_echo_queue);
+  if (rmt_receive(g_echo_channel, g_echo_symbols, sizeof(g_echo_symbols),
+                  &receive_cfg) != ESP_OK) {
+    return SONAR_READ_TIMEOUT;
+  }
+
+  gpio_set_level((gpio_num_t)g_trigger_pin, 1);
+  esp_rom_delay_us(driver->trigger_pulse_us);
+  gpio_set_level((gpio_num_t)g_trigger_pin, 0);
+
+  rmt_rx_done_event_data_t event;
+  if (xQueueReceive(g_echo_queue, &event,
+                    pdMS_TO_TICKS(driver->response_timeout_ms)) != pdTRUE) {
+    /* The echo pin never moved at all. Tear the armed receive down so the next
+     * cycle cannot complete on this ping's stale arming and report a width that
+     * belongs to a trigger we already gave up on. */
+    rmt_disable(g_echo_channel);
+    rmt_enable(g_echo_channel);
+    return SONAR_READ_TIMEOUT;
+  }
+
+  /* The echo is the first HIGH level in the capture; anything before it is the
+   * line sitting idle low, which RMT records as a leading low symbol. */
+  uint32_t width_us = 0;
+  for (size_t i = 0; i < event.num_symbols && width_us == 0; i++) {
+    if (event.received_symbols[i].level0 != 0 &&
+        event.received_symbols[i].duration0 > 0) {
+      width_us = event.received_symbols[i].duration0;
+    } else if (event.received_symbols[i].level1 != 0 &&
+               event.received_symbols[i].duration1 > 0) {
+      width_us = event.received_symbols[i].duration1;
+    }
+  }
+
+  /* A width at the ceiling is the RMT idle threshold cutting a pulse short, not
+   * a measurement. HC-SR04-family modules answer "nothing out there" with a very
+   * long pulse, so without this test a no-echo cycle would be published as the
+   * deepest reading the window allows instead of as 0. */
+  if (width_us + 4U >= driver->echo_max_us) {
+    width_us = 0;
+  }
+
+  *out_echo_us = width_us;
+  return SONAR_READ_OK;
+}
+
 static void danevi_sonar_task(void *arg) {
   uint8_t rx_buffer[BUF_SIZE];
   const sonar_driver_t *driver = danevi_driver();
@@ -389,32 +540,60 @@ static void danevi_sonar_task(void *arg) {
   ESP_LOGI(TAG, "Starting Hardwired Sonar Task on Core 1 (model %s)",
            driver->name);
 
+  const bool is_pulse = driver->link == SONAR_LINK_PULSE;
+
   while (1) {
     db_sonar_log_note_hardwired_poll();
-    // Clear buffer before sending trigger
-    uart_flush(SONAR_UART_NUM);
 
-    // Trigger ping. trigger_byte == 0 means the model free-runs and wants no
-    // prompt; we just listen for the next frame.
-    if (trigger_cmd != 0) {
-      uart_write_bytes(SONAR_UART_NUM, (const char *)&trigger_cmd, 1);
+    sonar_read_t outcome;
+    int distance = 0;
+    int length = 0;
+    uint32_t echo_us = 0;
+
+    if (is_pulse) {
+      outcome = danevi_read_pulse(driver, &echo_us);
+      if (outcome == SONAR_READ_OK) {
+        /* An echo width of 0 is a successful measurement of "no echo" and has
+         * to stay a real 0 all the way to the zero-run filter, exactly as a
+         * 0 mm UART frame does, or the two links stop being comparable. */
+        distance = driver->scale_us != NULL ? driver->scale_us(echo_us)
+                                            : (int)echo_us;
+      }
+    } else {
+      // Clear buffer before sending trigger
+      uart_flush(SONAR_UART_NUM);
+
+      // Trigger ping. trigger_byte == 0 means the model free-runs and wants no
+      // prompt; we just listen for the next frame.
+      if (trigger_cmd != 0) {
+        uart_write_bytes(SONAR_UART_NUM, (const char *)&trigger_cmd, 1);
+      }
+
+      length = uart_read_bytes(SONAR_UART_NUM, rx_buffer, frame_size,
+                               pdMS_TO_TICKS(driver->response_timeout_ms));
+
+      int raw_mm = -1;
+      if (length == frame_size && driver->parse(rx_buffer, length, &raw_mm)) {
+        /* A valid frame reporting 0 mm is a successful decode of "no echo" and
+         * must reach the zero-run filter as a real 0 - not as a bad frame. */
+        distance = raw_mm;
+        if (driver->scale_mm != NULL) {
+          distance = driver->scale_mm(raw_mm);
+        }
+        outcome = SONAR_READ_OK;
+      } else if (length > 0) {
+        outcome = SONAR_READ_REJECTED;
+      } else {
+        outcome = SONAR_READ_TIMEOUT;
+      }
     }
 
-    int length = uart_read_bytes(SONAR_UART_NUM, rx_buffer, frame_size,
-                                 pdMS_TO_TICKS(driver->response_timeout_ms));
-
-    int raw_mm = -1;
-    if (length == frame_size && driver->parse(rx_buffer, length, &raw_mm)) {
-      /* A valid frame reporting 0 mm is a successful decode of "no echo" and
-       * must reach the zero-run filter as a real 0 - not as a bad frame. */
-      int distance = raw_mm;
-      if (driver->scale_mm != NULL) {
-        distance = driver->scale_mm(raw_mm);
-      }
+    if (outcome == SONAR_READ_OK) {
       db_sonar_log_note_hardwired_frame(distance);
       danevi_sonar_set_distance(distance);
-      danevi_log_valid_distance(rx_buffer, length, distance);
-    } else if (length > 0) {
+      danevi_log_valid_distance(is_pulse ? NULL : rx_buffer, length, echo_us,
+                                distance);
+    } else if (outcome == SONAR_READ_REJECTED) {
       db_sonar_log_note_hardwired_bad_frame();
       /* The model's parse() is the authority on validity but cannot say WHY it
        * refused, so a full-length reject is reported as "frame rejected"
@@ -434,43 +613,84 @@ static void danevi_sonar_task(void *arg) {
 }
 
 void danevi_sonar_init(const sonar_driver_t *driver, int tx_pin, int rx_pin) {
-  /* A descriptor without parse() would null-deref on the first poll, and this
-   * struct is the extension point for future transducers - so refuse it here
-   * and fall back rather than crash-loop the boat on someone's next model. */
-  if (driver != NULL && driver->parse == NULL) {
-    ESP_LOGE(TAG, "Sonar model '%s' has no parse(); falling back to %s",
-             driver->name != NULL ? driver->name : "?",
-             sonar_driver_dyp_l041mtw.name);
-    driver = NULL;
+  /* A descriptor missing the function its own link depends on would null-deref
+   * on the first poll, and this struct is the extension point for future
+   * transducers - so refuse it here and fall back rather than crash-loop the
+   * boat on someone's next model. The required function differs by link: a UART
+   * model must be able to parse a frame, a PULSE model must be able to convert
+   * an echo width, and neither check covers the other. */
+  if (driver != NULL) {
+    const bool incomplete = driver->link == SONAR_LINK_PULSE
+                                ? driver->scale_us == NULL
+                                : driver->parse == NULL;
+    if (incomplete) {
+      ESP_LOGE(TAG, "Sonar model '%s' is missing its %s handler; falling back to %s",
+               driver->name != NULL ? driver->name : "?",
+               driver->link == SONAR_LINK_PULSE ? "scale_us" : "parse",
+               sonar_driver_dyp_l041mtw.name);
+      driver = NULL;
+    }
   }
   g_driver = driver != NULL ? driver : &sonar_driver_dyp_l041mtw;
   g_distance_mutex = xSemaphoreCreateMutex();
   danevi_debug_init();
 
-  uart_config_t uart_config = {
-      .baud_rate = (int)g_driver->baud_rate,
-      .data_bits = UART_DATA_8_BITS,
-      .parity = UART_PARITY_DISABLE,
-      .stop_bits = UART_STOP_BITS_1,
-      .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-  };
+  /* PULSE takes no UART at all. That is the second reason this link exists:
+   * UART2 is the only thing standing between the receiver and a direct CRSF
+   * tap, so a sonar that does not claim it hands that peripheral back. */
+  if (g_driver->link == SONAR_LINK_PULSE) {
+    if (!danevi_pulse_init(tx_pin, rx_pin)) {
+      ESP_LOGE(TAG, "Pulse sonar init failed on TRIG:%d ECHO:%d", tx_pin,
+               rx_pin);
+      char failed_line[DANEVI_DEBUG_LINE_MAX];
+      snprintf(failed_line, sizeof(failed_line),
+               "[%lu ms] ERR %s pulse init failed TRIG:%d ECHO:%d",
+               (unsigned long)danevi_now_ms(), g_driver->display_name, tx_pin,
+               rx_pin);
+      danevi_store_debug_line(failed_line);
+      return;
+    }
+  } else {
+    uart_config_t uart_config = {
+        .baud_rate = (int)g_driver->baud_rate,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+    };
 
-  ESP_ERROR_CHECK(
-      uart_driver_install(SONAR_UART_NUM, BUF_SIZE * 2, 0, 0, NULL, 0));
-  ESP_ERROR_CHECK(uart_param_config(SONAR_UART_NUM, &uart_config));
-  ESP_ERROR_CHECK(uart_set_pin(SONAR_UART_NUM, tx_pin, rx_pin,
-                               UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    ESP_ERROR_CHECK(
+        uart_driver_install(SONAR_UART_NUM, BUF_SIZE * 2, 0, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_param_config(SONAR_UART_NUM, &uart_config));
+    ESP_ERROR_CHECK(uart_set_pin(SONAR_UART_NUM, tx_pin, rx_pin,
+                                 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+  }
 
   xTaskCreatePinnedToCore(danevi_sonar_task, "danevi_sonar",
                           DANEVI_SONAR_TASK_STACK_SIZE, NULL, 5,
                           NULL, 1);
 
-  ESP_LOGI(TAG, "Danevi Sonar initialized on UART2, model %s @%lu baud, TX:%d RX:%d",
-           g_driver->name, (unsigned long)g_driver->baud_rate, tx_pin, rx_pin);
   char debug_line[DANEVI_DEBUG_LINE_MAX];
-  snprintf(debug_line, sizeof(debug_line),
-           "[%lu ms] INFO %s UART2 init @%lu baud TX:%d RX:%d",
-           (unsigned long)danevi_now_ms(), g_driver->display_name,
-           (unsigned long)g_driver->baud_rate, tx_pin, rx_pin);
+  if (g_driver->link == SONAR_LINK_PULSE) {
+    ESP_LOGI(TAG,
+             "Danevi Sonar initialized on RMT, model %s, TRIG:%d ECHO:%d, "
+             "%lu us trigger, %lu us echo window",
+             g_driver->name, tx_pin, rx_pin,
+             (unsigned long)g_driver->trigger_pulse_us,
+             (unsigned long)g_driver->echo_max_us);
+    snprintf(debug_line, sizeof(debug_line),
+             "[%lu ms] INFO %s RMT init TRIG:%d ECHO:%d trig=%lu us win=%lu us",
+             (unsigned long)danevi_now_ms(), g_driver->display_name, tx_pin,
+             rx_pin, (unsigned long)g_driver->trigger_pulse_us,
+             (unsigned long)g_driver->echo_max_us);
+  } else {
+    ESP_LOGI(TAG,
+             "Danevi Sonar initialized on UART2, model %s @%lu baud, TX:%d RX:%d",
+             g_driver->name, (unsigned long)g_driver->baud_rate, tx_pin, rx_pin);
+    snprintf(debug_line, sizeof(debug_line),
+             "[%lu ms] INFO %s UART2 init @%lu baud TX:%d RX:%d",
+             (unsigned long)danevi_now_ms(), g_driver->display_name,
+             (unsigned long)g_driver->baud_rate, tx_pin, rx_pin);
+  }
   danevi_store_debug_line(debug_line);
 }

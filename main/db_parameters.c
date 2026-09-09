@@ -455,8 +455,10 @@ db_parameter_t db_param_sonar_rx_gpio = {
 
 /**
  * Which hardwired transducer model is fitted. 0 = DYP-L041MTW (the original),
- * 1 = AJ-SR04M / JSN-SR04T. Selects the driver descriptor at boot; the two
- * sensors share UART2 and are never run together. Takes effect on restart.
+ * 1 = AJ-SR04M / JSN-SR04T over UART, 2 = the same AJ-SR04M in its as-shipped
+ * pulse/echo mode (R19 removed), which is measured with RMT and leaves UART2
+ * free. Selects the driver descriptor at boot; the models are never run
+ * together. Takes effect on restart.
  */
 db_parameter_t db_param_sonar_type = {
     .db_name = "ss_type",
@@ -471,7 +473,7 @@ db_parameter_t db_param_sonar_type = {
                   .value = 0,
                   .default_value = 0,
                   .min = 0,
-                  .max = 1,
+                  .max = 2,
               }}};
 
 /**

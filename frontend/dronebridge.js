@@ -181,7 +181,17 @@ function change_sonar_model_visibility() {
 	let model_select = document.getElementById("ss_type");
 	let water_div = document.getElementById("ss_water_mps_div");
 	if (model_select == null || water_div == null) return;
-	water_div.style.display = model_select.value === "1" ? "block" : "none";
+	// Both AJ-SR04M links need the water constant. The UART one uses it to undo
+	// the module's air scaling; the pulse one uses it to convert raw echo time,
+	// where it is the ONLY thing turning microseconds into millimetres.
+	let is_sr04m = model_select.value === "1" || model_select.value === "2";
+	water_div.style.display = is_sr04m ? "block" : "none";
+	// In pulse mode these two pins are not a UART. Calling them TX and RX there
+	// would have someone wiring Echo to the pin the ESP is driving.
+	let tx_label = document.querySelector('label[for="ss_tx_pin"]');
+	let rx_label = document.querySelector('label[for="ss_rx_pin"]');
+	if (tx_label != null) tx_label.textContent = model_select.value === "2" ? "TRIG GPIO" : "TX GPIO";
+	if (rx_label != null) rx_label.textContent = model_select.value === "2" ? "ECHO GPIO" : "RX GPIO";
 }
 
 function change_hardwired_visibility() {
