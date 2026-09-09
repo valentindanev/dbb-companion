@@ -78,12 +78,10 @@ typedef struct {
     db_mavlink_vibration_state_t vibration;
     db_mavlink_timesync_state_t timesync;
     db_mavlink_statustext_state_t statustext;
-    db_mavlink_distance_sensor_state_t returned_distance_sensor;
     int64_t rc_last_us;
     int64_t power_last_us;
     int64_t battery_last_us;
     int64_t gps_last_us;
-    int64_t returned_distance_sensor_last_us;
     int64_t system_last_us, time_last_us, attitude_last_us, position_last_us;
     int64_t vfr_last_us, pressure_last_us, raw_imu_last_us, scaled_imu2_last_us;
     int64_t mission_last_us, servo_last_us, vibration_last_us, timesync_last_us;
@@ -388,24 +386,7 @@ static void db_mavlink_update_telemetry_cache(const fmav_message_t *msg) {
         break;
     }
     case FASTMAVLINK_MSG_ID_DISTANCE_SENSOR: {
-        fmav_distance_sensor_t distance_sensor;
-        fmav_msg_distance_sensor_decode(&distance_sensor, msg);
-        taskENTER_CRITICAL(&s_telemetry_cache_mux);
-        if (s_telemetry_cache.returned_distance_sensor_last_us != 0) {
-            uint32_t interval_ms = (uint32_t)((now - s_telemetry_cache.returned_distance_sensor_last_us) / 1000);
-            s_telemetry_cache.returned_distance_sensor.last_interval_ms = interval_ms;
-            if (interval_ms > s_telemetry_cache.returned_distance_sensor.max_interval_ms) {
-                s_telemetry_cache.returned_distance_sensor.max_interval_ms = interval_ms;
-            }
-        }
-        s_telemetry_cache.returned_distance_sensor.count++;
-        s_telemetry_cache.returned_distance_sensor.distance_mm =
-            (int32_t)distance_sensor.current_distance * 10;
-        s_telemetry_cache.returned_distance_sensor.sensor_id = distance_sensor.id;
-        s_telemetry_cache.returned_distance_sensor.sysid = msg->sysid;
-        s_telemetry_cache.returned_distance_sensor.compid = msg->compid;
-        s_telemetry_cache.returned_distance_sensor_last_us = now;
-        taskEXIT_CRITICAL(&s_telemetry_cache_mux);
+        /* Keep hardwired capture accounting; the Deeper UI tracer is removed. */
         db_sonar_log_note_fc_returned_distance_sensor();
         break;
     }
@@ -442,7 +423,6 @@ void db_mavlink_get_telemetry(db_mavlink_telemetry_t *out_telemetry) {
     out_telemetry->vibration = local_cache.vibration;
     out_telemetry->timesync = local_cache.timesync;
     out_telemetry->statustext = local_cache.statustext;
-    out_telemetry->returned_distance_sensor = local_cache.returned_distance_sensor;
     out_telemetry->rc.age_ms = local_cache.rc.valid ? (now - local_cache.rc_last_us) / 1000 : -1;
     out_telemetry->power.age_ms = local_cache.power.valid ? (now - local_cache.power_last_us) / 1000 : -1;
     out_telemetry->battery.age_ms = local_cache.battery.valid ? (now - local_cache.battery_last_us) / 1000 : -1;
@@ -460,9 +440,6 @@ void db_mavlink_get_telemetry(db_mavlink_telemetry_t *out_telemetry) {
     out_telemetry->vibration.age_ms = local_cache.vibration.valid ? (now - local_cache.vibration_last_us) / 1000 : -1;
     out_telemetry->timesync.age_ms = local_cache.timesync.valid ? (now - local_cache.timesync_last_us) / 1000 : -1;
     out_telemetry->statustext.age_ms = local_cache.statustext.valid ? (now - local_cache.statustext_last_us) / 1000 : -1;
-    out_telemetry->returned_distance_sensor.age_ms =
-        local_cache.returned_distance_sensor_last_us != 0
-            ? (now - local_cache.returned_distance_sensor_last_us) / 1000 : -1;
     out_telemetry->message_stat_count = local_cache.message_stat_count;
     for (int i = 0; i < local_cache.message_stat_count; i++) {
         out_telemetry->message_stats[i].id = local_cache.message_stats[i].id;

@@ -34,14 +34,6 @@
 
 #include <stdint.h>
 
-typedef struct {
-    uint32_t deeper_publish_count;
-    uint32_t deeper_fresh_publish_count;
-    uint32_t deeper_no_data_skip_count;
-    int last_published_depth_mm;
-    uint32_t last_publish_age_ms;
-} db_sonar_publish_diagnostics_t;
-
 void db_timer_start_wifi_rssi_timer();
 
 void db_timer_start_mavlink_heartbeat();
@@ -49,6 +41,5 @@ void db_timer_start_mavlink_heartbeat();
 void db_timer_start_mavlink_radio_status();
 
 void db_timer_start_mavlink_sonar();
-void db_get_sonar_publish_diagnostics(db_sonar_publish_diagnostics_t *diagnostics);
 
 #endif // DB_ESP32_DB_TIMERS_H

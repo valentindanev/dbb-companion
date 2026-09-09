@@ -98,18 +98,6 @@ typedef struct { bool valid; int64_t tc1; int64_t ts1; int64_t age_ms; } db_mavl
 typedef struct { bool valid; uint8_t severity; char text[51]; int64_t age_ms; } db_mavlink_statustext_state_t;
 typedef struct { uint32_t id; uint32_t count; int64_t age_ms; } db_mavlink_message_stat_t;
 
-/* DISTANCE_SENSOR messages arriving back from the FC on the ESP UART. */
-typedef struct {
-    uint32_t count;
-    uint32_t last_interval_ms;
-    uint32_t max_interval_ms;
-    int32_t distance_mm;
-    uint8_t sensor_id;
-    uint8_t sysid;
-    uint8_t compid;
-    int64_t age_ms; /* -1 until the first returned message */
-} db_mavlink_distance_sensor_state_t;
-
 typedef struct {
     db_mavlink_fc_state_t fc;
     db_mavlink_rc_state_t rc;
@@ -129,7 +117,6 @@ typedef struct {
     db_mavlink_vibration_state_t vibration;
     db_mavlink_timesync_state_t timesync;
     db_mavlink_statustext_state_t statustext;
-    db_mavlink_distance_sensor_state_t returned_distance_sensor;
     uint8_t message_stat_count;
     db_mavlink_message_stat_t message_stats[DB_MAVLINK_TELEMETRY_MSG_TYPES_MAX];
 } db_mavlink_telemetry_t;

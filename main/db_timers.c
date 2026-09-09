@@ -54,21 +54,6 @@ static TickType_t s_last_fc_heartbeat_tick = 0;
 static bool s_sonar_task_missing_logged = false;
 static uint8_t s_sonar_publish_buffer[296];
 static fmav_status_t s_sonar_mav_status = {0};
-static db_sonar_publish_diagnostics_t s_sonar_diagnostics = {
-    .last_published_depth_mm = -1,
-    .last_publish_age_ms = UINT32_MAX,
-};
-static uint32_t s_last_deeper_depth_count = 0;
-static portMUX_TYPE s_sonar_diagnostics_mux = portMUX_INITIALIZER_UNLOCKED;
-
-void db_get_sonar_publish_diagnostics(
-    db_sonar_publish_diagnostics_t *diagnostics) {
-  if (diagnostics == NULL) return;
-  taskENTER_CRITICAL(&s_sonar_diagnostics_mux);
-  *diagnostics = s_sonar_diagnostics;
-  taskEXIT_CRITICAL(&s_sonar_diagnostics_mux);
-}
-
 static bool db_wifi_runtime_has_sta(void) {
   wifi_mode_t mode = WIFI_MODE_NULL;
   return esp_wifi_get_mode(&mode) == ESP_OK &&
@@ -284,11 +269,6 @@ static void db_publish_active_sonar_distance(void) {
   bool use_deeper_sonar = false;
   if (!db_get_active_sonar_distance(&distance_mm, &use_deeper_sonar) ||
       distance_mm < 0) {
-    if (DB_ACTIVE_SONAR_SOURCE == DB_SONAR_SOURCE_DEEPER) {
-      taskENTER_CRITICAL(&s_sonar_diagnostics_mux);
-      s_sonar_diagnostics.deeper_no_data_skip_count++;
-      taskEXIT_CRITICAL(&s_sonar_diagnostics_mux);
-    }
     return;
   }
 
@@ -308,21 +288,6 @@ static void db_publish_active_sonar_distance(void) {
 
   write_to_serial(s_sonar_publish_buffer, len);
   db_send_to_all_radio_clients(s_sonar_publish_buffer, len);
-
-  if (use_deeper_sonar) {
-    deeper_udp_diagnostics_t deeper_diagnostics = {0};
-    deeper_udp_sonar_get_diagnostics(&deeper_diagnostics);
-    taskENTER_CRITICAL(&s_sonar_diagnostics_mux);
-    s_sonar_diagnostics.deeper_publish_count++;
-    if (deeper_diagnostics.depth_count != s_last_deeper_depth_count) {
-      s_sonar_diagnostics.deeper_fresh_publish_count++;
-      s_last_deeper_depth_count = deeper_diagnostics.depth_count;
-    }
-    s_sonar_diagnostics.last_published_depth_mm = distance_mm;
-    s_sonar_diagnostics.last_publish_age_ms =
-        deeper_diagnostics.last_depth_age_ms;
-    taskEXIT_CRITICAL(&s_sonar_diagnostics_mux);
-  }
 
   TickType_t now = xTaskGetTickCount();
   if ((now - s_last_sonar_log_tick) >= pdMS_TO_TICKS(1000)) {

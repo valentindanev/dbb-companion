@@ -815,7 +815,6 @@ function get_stats() {
 		change_hardwired_visibility();
 		update_hardwired_readouts(json_data);
 		update_deeper_readouts(json_data);
-		update_deeper_pipeline_diagnostics(json_data);
 
 	}).catch(error => {
 		// get_json() already counted this failure - do not count it twice
@@ -933,35 +932,6 @@ function update_deeper_readouts(json_data) {
 	} else {
 		document.getElementById("ss_deeper_coordinates").innerHTML = "Waiting for valid fix";
 	}
-}
-
-function update_deeper_pipeline_diagnostics(json_data) {
-	let elem = document.getElementById("ss_deeper_pipeline");
-	if (elem == null) return;
-	let n = (key) => { let value = parseInt(json_data[key]); return isNaN(value) ? 0 : value; };
-	let requestCount = n("deeper_request_count");
-	let depthCount = n("deeper_depth_count");
-	let inputLast = n("deeper_last_depth_interval_ms");
-	let inputMax = n("deeper_max_depth_interval_ms");
-	let publishCount = n("deeper_fc_publish_count");
-	let freshPublishCount = n("deeper_fresh_publish_count");
-	let skipCount = n("deeper_no_data_skip_count");
-	let returnCount = n("deeper_return_count");
-	let returnLast = n("deeper_return_last_interval_ms");
-	let returnMax = n("deeper_return_max_interval_ms");
-	let returnAge = parseInt(json_data["deeper_return_age_ms"]);
-	let returnDepth = parseInt(json_data["deeper_return_depth_mm"]);
-	let returnSource = n("deeper_return_sysid") + "." + n("deeper_return_compid");
-
-	let input = "Deeper → ESP: " + depthCount + " depth / " + requestCount + " requests" +
-		(depthCount > 1 ? ", interval " + inputLast + " ms (max " + inputMax + " ms)" : "");
-	let output = "ESP → FC: " + publishCount + " published, " + freshPublishCount + " fresh" +
-		(skipCount ? ", " + skipCount + " no-data skips" : "");
-	let returned = returnCount === 0 ? "FC → ESP: no DISTANCE_SENSOR returned yet" :
-		"FC → ESP: " + returnCount + " returned, interval " + returnLast + " ms (max " + returnMax +
-		" ms), " + (returnDepth / 1000).toFixed(2) + " m from " + returnSource +
-		(!isNaN(returnAge) && returnAge >= 0 ? " (" + returnAge + " ms ago)" : "");
-	elem.textContent = input + " | " + output + " | " + returned;
 }
 
 /**

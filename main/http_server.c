@@ -584,10 +584,7 @@ static esp_err_t system_stats_get_handler(httpd_req_t *req) {
     bool runtime_ap = db_http_runtime_has_ap();
     danevi_sonar_snapshot_t hardwired_snapshot = {0};
     deeper_udp_snapshot_t deeper_snapshot = {0};
-    deeper_udp_diagnostics_t deeper_diagnostics = {0};
-    db_sonar_publish_diagnostics_t sonar_diagnostics = {0};
     db_mavlink_fc_state_t fc_state = {0};
-    db_mavlink_telemetry_t telemetry = {0};
     db_sonar_log_crash_diag_t logger_diag = {0};
     char *hardwired_debug_log = calloc(1, DB_HTTP_DEBUG_LOG_BUFFER_SIZE);
     char *deeper_debug_log = calloc(1, DB_HTTP_DEBUG_LOG_BUFFER_SIZE);
@@ -606,10 +603,7 @@ static esp_err_t system_stats_get_handler(httpd_req_t *req) {
     danevi_sonar_get_snapshot(&hardwired_snapshot);
     db_get_deeper_debug_log(deeper_debug_log, DB_HTTP_DEBUG_LOG_BUFFER_SIZE);
     deeper_udp_sonar_get_snapshot(&deeper_snapshot);
-    deeper_udp_sonar_get_diagnostics(&deeper_diagnostics);
-    db_get_sonar_publish_diagnostics(&sonar_diagnostics);
     db_mavlink_get_fc_state(&fc_state);
-    db_mavlink_get_telemetry(&telemetry);
     db_sonar_log_get_crash_diag(&logger_diag);
     cJSON_AddNumberToObject(root, "esp_uptime_ms",
                             (double)(esp_timer_get_time() / 1000ULL));
@@ -713,38 +707,6 @@ static esp_err_t system_stats_get_handler(httpd_req_t *req) {
                                 : 0.0);
     cJSON_AddNumberToObject(root, "deeper_sample_age_ms",
                             deeper_snapshot.newest_sample_age_ms);
-    cJSON_AddNumberToObject(root, "deeper_request_count",
-                            deeper_diagnostics.request_count);
-    cJSON_AddNumberToObject(root, "deeper_depth_count",
-                            deeper_diagnostics.depth_count);
-    cJSON_AddNumberToObject(root, "deeper_last_depth_interval_ms",
-                            deeper_diagnostics.last_depth_interval_ms);
-    cJSON_AddNumberToObject(root, "deeper_max_depth_interval_ms",
-                            deeper_diagnostics.max_depth_interval_ms);
-    cJSON_AddNumberToObject(root, "deeper_last_depth_age_ms",
-                            deeper_diagnostics.last_depth_age_ms);
-    cJSON_AddNumberToObject(root, "deeper_fc_publish_count",
-                            sonar_diagnostics.deeper_publish_count);
-    cJSON_AddNumberToObject(root, "deeper_fresh_publish_count",
-                            sonar_diagnostics.deeper_fresh_publish_count);
-    cJSON_AddNumberToObject(root, "deeper_no_data_skip_count",
-                            sonar_diagnostics.deeper_no_data_skip_count);
-    cJSON_AddNumberToObject(root, "deeper_return_count",
-                            telemetry.returned_distance_sensor.count);
-    cJSON_AddNumberToObject(root, "deeper_return_last_interval_ms",
-                            telemetry.returned_distance_sensor.last_interval_ms);
-    cJSON_AddNumberToObject(root, "deeper_return_max_interval_ms",
-                            telemetry.returned_distance_sensor.max_interval_ms);
-    cJSON_AddNumberToObject(root, "deeper_return_age_ms",
-                            telemetry.returned_distance_sensor.age_ms);
-    cJSON_AddNumberToObject(root, "deeper_return_depth_mm",
-                            telemetry.returned_distance_sensor.distance_mm);
-    cJSON_AddNumberToObject(root, "deeper_return_sensor_id",
-                            telemetry.returned_distance_sensor.sensor_id);
-    cJSON_AddNumberToObject(root, "deeper_return_sysid",
-                            telemetry.returned_distance_sensor.sysid);
-    cJSON_AddNumberToObject(root, "deeper_return_compid",
-                            telemetry.returned_distance_sensor.compid);
     // add IP:PORT info on connected UDP clients
     cJSON *udp_clients = cJSON_CreateArray();
     for (int i = 0; i < udp_conn_list->size; i++) {

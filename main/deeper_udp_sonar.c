@@ -30,10 +30,6 @@
 static SemaphoreHandle_t g_deeper_state_mutex = NULL;
 static int g_deeper_distance_mm = -1;
 static uint32_t g_deeper_distance_update_ms = 0;
-static uint32_t g_deeper_request_count = 0;
-static uint32_t g_deeper_depth_count = 0;
-static uint32_t g_deeper_last_depth_interval_ms = 0;
-static uint32_t g_deeper_max_depth_interval_ms = 0;
 static int g_deeper_temperature_c_tenths = INT_MIN;
 static uint32_t g_deeper_temperature_update_ms = 0;
 static int g_deeper_satellites = -1;
@@ -74,15 +70,8 @@ static void deeper_set_latest_distance(int distance_mm) {
 
   xSemaphoreTake(g_deeper_state_mutex, portMAX_DELAY);
   uint32_t now = deeper_now_ms();
-  if (g_deeper_distance_update_ms != 0) {
-    g_deeper_last_depth_interval_ms = now - g_deeper_distance_update_ms;
-    if (g_deeper_last_depth_interval_ms > g_deeper_max_depth_interval_ms) {
-      g_deeper_max_depth_interval_ms = g_deeper_last_depth_interval_ms;
-    }
-  }
   g_deeper_distance_mm = distance_mm;
   g_deeper_distance_update_ms = now;
-  g_deeper_depth_count++;
   xSemaphoreGive(g_deeper_state_mutex);
 }
 
@@ -470,12 +459,6 @@ static void deeper_udp_sonar_task(void *arg) {
       if (sent < 0) {
         ESP_LOGW(TAG, "Failed to send Deeper request. errno=%d", errno);
       } else {
-        deeper_state_init();
-        if (g_deeper_state_mutex != NULL) {
-          xSemaphoreTake(g_deeper_state_mutex, portMAX_DELAY);
-          g_deeper_request_count++;
-          xSemaphoreGive(g_deeper_state_mutex);
-        }
         if (last_request_ms == 0) {
           deeper_log_line("TX ", "$DEEP230,1*38");
         }
@@ -625,24 +608,4 @@ bool deeper_udp_sonar_get_snapshot(deeper_udp_snapshot_t *snapshot) {
   }
 
   return has_snapshot;
-}
-
-bool deeper_udp_sonar_get_diagnostics(deeper_udp_diagnostics_t *diagnostics) {
-  if (diagnostics == NULL) return false;
-  memset(diagnostics, 0, sizeof(*diagnostics));
-  diagnostics->last_depth_mm = -1;
-  deeper_state_init();
-  if (g_deeper_state_mutex == NULL) return false;
-
-  uint32_t now = deeper_now_ms();
-  xSemaphoreTake(g_deeper_state_mutex, portMAX_DELAY);
-  diagnostics->request_count = g_deeper_request_count;
-  diagnostics->depth_count = g_deeper_depth_count;
-  diagnostics->last_depth_interval_ms = g_deeper_last_depth_interval_ms;
-  diagnostics->max_depth_interval_ms = g_deeper_max_depth_interval_ms;
-  diagnostics->last_depth_mm = g_deeper_distance_mm;
-  diagnostics->last_depth_age_ms = g_deeper_distance_update_ms == 0
-      ? UINT32_MAX : now - g_deeper_distance_update_ms;
-  xSemaphoreGive(g_deeper_state_mutex);
-  return true;
 }
