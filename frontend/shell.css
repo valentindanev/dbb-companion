@@ -156,6 +156,13 @@ summary::-webkit-details-marker{display:none}
 .info.note h4{margin:0 0 6px;color:var(--warn);font-size:12px}
 
 .sonar-cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.compare-test{margin-top:14px;border-color:rgba(245,76,76,.55)}
+.compare-banner{margin:-1px -1px 14px;padding:11px;text-align:center;font-weight:900;letter-spacing:.08em;background:#b91c1c;color:#fff;border-radius:var(--radius) var(--radius) 0 0}
+.compare-reason{color:var(--muted);font-size:13px}
+.compare-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.compare-preflight{margin:14px 0;padding:12px;border:1px solid rgba(245,76,76,.35);border-radius:10px;background:rgba(245,76,76,.07);font-size:13px}
+.compare-preflight ol{margin:8px 0;padding-left:22px}.compare-preflight a{color:var(--teal)}
+.compare-meta{margin:14px 0}
 .subcard{border:1px solid var(--line);border-radius:12px;padding:17px;background:var(--surface2)}
 .subhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:15px}
 .subhead h3{margin:0;font-size:14.5px}.subhead small{color:var(--muted);font-size:11.5px}

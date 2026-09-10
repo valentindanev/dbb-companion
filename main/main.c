@@ -43,6 +43,8 @@
 #include "freertos/timers.h"
 #include "http_server.h"
 #include "dbb_brain.h"
+#include "sonar_compare_core.h"
+#include "sonar_compare_test.h"
 #include "main.h"
 
 #include <button_gpio.h>
@@ -1236,6 +1238,11 @@ void app_main() {
   db_configure_antenna();
   DB_ACTIVE_SONAR_SOURCE = DB_SONAR_SOURCE_NONE;
   boot_radio_mode = DB_PARAM_RADIO_MODE;
+#if CONFIG_DB_SONAR_COMPARE_TEST
+  /* Disposable comparison images always take the existing Deeper STA path.
+   * This is compile-time only; no stored setting can enable the mode. */
+  boot_radio_mode = DB_WIFI_MODE_AP;
+#endif
 
   if (force_update_ap_mode) {
     ESP_LOGW(TAG, "One-time update AP mode requested. Skipping normal radio "
@@ -1249,7 +1256,11 @@ void app_main() {
   } else {
   switch (boot_radio_mode) {
   case DB_WIFI_MODE_AP:
-    if (DB_PARAM_DEEPER_EN) {
+    if (DB_PARAM_DEEPER_EN
+#if CONFIG_DB_SONAR_COMPARE_TEST
+        || true
+#endif
+    ) {
       char original_wifi_ssid[MAX_SSID_LEN] = {0};
       char original_wifi_pass[DB_PARAM_VALUE_MAXLEN] = {0};
       db_copy_cstr(original_wifi_ssid, sizeof(original_wifi_ssid),
@@ -1363,6 +1374,19 @@ void app_main() {
     ESP_LOGI(TAG, "No hardwired sonar source selected for this boot.");
   }
 
+#if CONFIG_DB_SONAR_COMPARE_TEST
+  if (deeper_sta_connected) {
+    const sonar_model_t required_model = (sonar_model_t)
+        sonar_compare_required_model_id((int)DB_PARAM_SONAR_TYPE);
+    const sonar_driver_t *aj = sonar_driver_get(required_model);
+    if (aj == NULL) {
+      ESP_LOGE(TAG, "Comparison AJ registry lookup failed; session will refuse");
+    } else {
+      danevi_sonar_init(aj, DB_PARAM_SONAR_TX_GPIO, DB_PARAM_SONAR_RX_GPIO);
+    }
+  }
+#endif
+
   {
     // mDNS + NetBIOS are useful in every remaining Wi-Fi mode (AP/STA).
     start_mdns_service();
@@ -1395,6 +1419,7 @@ void app_main() {
     ESP_LOGW(TAG, "Persistent sonar log filesystem is unavailable. "
                   "Continuing without downloadable rolling logs.");
   }
+  sonar_compare_test_init(deeper_sta_connected, DB_ACTIVE_SONAR_SOURCE);
   db_sonar_log_log_boot(DB_ACTIVE_SONAR_SOURCE, boot_radio_mode,
                         deeper_sta_connected, force_update_ap_mode,
                         db_is_web_fs_available());

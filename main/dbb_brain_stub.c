@@ -33,3 +33,7 @@ __attribute__((weak)) void dbb_brain_ota_health(uint32_t *required,
     if (passed != NULL) *passed = 0U;
     if (failed != NULL) *failed = 0U;
 }
+
+__attribute__((weak)) bool dbb_brain_synthetic_uart_nmea_active(void) {
+    return false;
+}

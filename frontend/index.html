@@ -211,6 +211,34 @@
             <div id="ss_deeper_debug_div"><label class="console-lbl" for="ss_deeper_debug"><span style="font-size:11.5px;font-weight:700;color:var(--muted)">Recent Deeper packets</span></label><textarea id="ss_deeper_debug" class="debug-window" readonly spellcheck="false">Waiting for Deeper traffic...</textarea></div>
           </article>
         </div>
+        <article id="sonar_compare_panel" class="subcard compare-test" hidden>
+          <div class="compare-banner">SONAR COMPARE TEST &mdash; NOT FOR NORMAL USE</div>
+          <div class="subhead"><div><h3>Comparison Test</h3><small>Raw AJ-SR04M pulse observations against Deeper DBT</small></div><span id="compare_state" class="tag">idle</span></div>
+          <p id="compare_reason" class="compare-reason">Waiting for comparison status...</p>
+          <div class="reads compare-grid">
+            <div class="read"><small>AJ raw / age</small><div id="compare_aj_raw" class="deeper-readout">missing</div></div>
+            <div class="read"><small>AJ filtered / age</small><div id="compare_aj_filtered" class="deeper-readout">missing</div></div>
+            <div class="read"><small>AJ echo width</small><div id="compare_aj_echo" class="deeper-readout">missing</div></div>
+            <div class="read"><small>Deeper / age</small><div id="compare_deeper" class="deeper-readout">missing</div></div>
+            <div class="read"><small>Pair quality / separation</small><div id="compare_pair" class="deeper-readout">nothing to compare</div></div>
+            <div class="read"><small>AJ - Deeper</small><div id="compare_difference" class="deeper-readout">n/a</div></div>
+            <div class="read"><small>FC GPS</small><div id="compare_fc_gps" class="deeper-readout">missing</div></div>
+            <div class="read"><small>Deeper GPS</small><div id="compare_deeper_gps" class="deeper-readout">missing</div></div>
+            <div class="read"><small>Counters</small><div id="compare_counters" class="deeper-readout">0 observations</div></div>
+            <div class="read"><small>MAVLink authority</small><div id="compare_authority" class="deeper-readout">checking</div></div>
+          </div>
+          <div class="compare-preflight"><b>Bank-side preflight</b><ol><li>Join the Deeper access point with this phone or laptop.</li><li>Load this comparison page from that network.</li><li>Confirm this red test banner is visible.</li><li><a href="/api/sonar-compare/download?preflight=1">Download the empty preflight bundle</a> and confirm it opens.</li></ol><label><input id="compare_preflight" type="checkbox"> I completed all four checks before leaving the bank.</label></div>
+          <div class="grid2 compare-meta">
+            <div class="field"><label for="compare_site">Site</label><input id="compare_site" maxlength="40" placeholder="lake / area"></div>
+            <div class="field"><label for="compare_bottom">Bottom</label><input id="compare_bottom" maxlength="24" placeholder="silt / gravel / weeds"></div>
+            <div class="field"><label for="compare_spacing">Transducer spacing (mm)</label><input id="compare_spacing" type="number" min="0" max="3000"></div>
+            <div class="field"><label for="compare_aj_draft">AJ draft (mm)</label><input id="compare_aj_draft" type="number" min="0" max="3000"></div>
+            <div class="field"><label for="compare_deeper_draft">Deeper draft (mm)</label><input id="compare_deeper_draft" type="number" min="0" max="3000"></div>
+            <div class="field"><label for="compare_temp">Water temperature (&deg;C)</label><input id="compare_temp" type="number" min="-5" max="50" step="0.1"></div>
+            <div class="field"><label for="compare_notes">Notes</label><input id="compare_notes" maxlength="56"></div>
+          </div>
+          <div class="button-row"><button type="button" class="btn" onclick="start_sonar_compare()">Start comparison</button><button type="button" class="btn danger" onclick="stop_sonar_compare()">Stop and seal log</button><button type="button" class="btn" onclick="download_sonar_compare()">Download test bundle</button></div>
+        </article>
       </div>
     </section>
 
@@ -222,7 +250,7 @@
         <div id="sonar_log_status" class="deeper-readout" style="color:var(--muted);font-size:12px;margin-bottom:12px">Waiting for persistent sonar log status...</div>
         <div class="grid2" style="margin-bottom:12px">
           <div class="field"><label for="log_session_select">Capture session</label><select id="log_session_select"><option value="">No captured sessions yet</option></select></div>
-          <div class="field"><label for="log_type_select">Log to inspect</label><select id="log_type_select"><option value="system">System operations</option><option value="trip">Trip / energy</option><option value="hardwired">Hardwired sonar</option><option value="deeper">Deeper sonar</option></select></div>
+          <div class="field"><label for="log_type_select">Log to inspect</label><select id="log_type_select"><option value="system">System operations</option><option value="trip">Trip / energy</option><option value="hardwired">Hardwired sonar</option><option value="deeper">Deeper sonar</option><option value="compare">Comparison test</option></select></div>
         </div>
         <textarea id="sonar_persistent_log" class="big-console" readonly spellcheck="false">Waiting for persistent sonar log...</textarea>
         <div class="row-actions">
@@ -281,6 +309,7 @@ _updateActive();
 while (get_system_info() < 0) {}
 while (get_settings() < 0) {}
 setInterval(get_stats, 500);
+setInterval(get_sonar_compare_status, 750);
 setInterval(update_conn_status, 500);
 setInterval(get_sonar_log_status, 5000);
 setInterval(check_for_issues, 1000);

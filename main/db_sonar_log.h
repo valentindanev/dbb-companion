@@ -2,12 +2,13 @@
  * db_sonar_log — separated persistent logging on the FAT `logs` partition.
  *
  * Contract (19/20-08-2026; see also HANDOVER_esp-logging-20260819.md):
- * - Four logical streams: bounded /logs/SYSTEM.LOG (256 KiB, compacts to its
+ * - Five logical streams: bounded /logs/SYSTEM.LOG (256 KiB, compacts to its
  *   newest 192 KiB) plus per-session trip (T#######), hardwired sonar
- *   (H#######) and Deeper sonar (D#######) files. Active session files carry
+ *   (H#######), Deeper sonar (D#######), and disposable comparison (C#######)
+ *   files. Active session files carry
  *   .TMP and are renamed .LOG together on clean close; interrupted .TMP files
  *   are recovered to .LOG at the next boot. 8.3 names only (FATFS_LFN_NONE).
- * - One session = one shared seven-digit id across the three streams. Armed
+ * - One session = one shared seven-digit id across the four session streams. Armed
  *   capture starts/ends with the FC arm state; a manual timed capture
  *   (30 s..12 h) may start while disarmed or extend an armed session.
  * - Retention: before each write, 256 KiB filesystem headroom plus the
@@ -47,6 +48,7 @@ typedef enum {
   DB_LOG_STREAM_TRIP = 1,
   DB_LOG_STREAM_HARDWIRED = 2,
   DB_LOG_STREAM_DEEPER = 3,
+  DB_LOG_STREAM_COMPARE = 4,
 } db_log_stream_t;
 
 typedef struct {
@@ -78,6 +80,7 @@ typedef struct {
   size_t trip_bytes;
   size_t hardwired_bytes;
   size_t deeper_bytes;
+  size_t compare_bytes;
 } db_sonar_log_session_info_t;
 
 /* Reset-safe breadcrumbs live only in RTC no-init memory. They are deliberately
@@ -114,6 +117,8 @@ esp_err_t db_sonar_log_format_volume(void);
 esp_err_t db_sonar_log_start_manual_capture(uint32_t duration_seconds,
                                             uint32_t *out_session_id);
 esp_err_t db_sonar_log_stop_manual_capture(void);
+esp_err_t db_sonar_log_start_compare_capture(uint32_t *out_session_id);
+esp_err_t db_sonar_log_stop_compare_capture(void);
 void db_sonar_log_tick(void);
 
 void db_sonar_log_get_crash_diag(db_sonar_log_crash_diag_t *diag);
@@ -132,6 +137,8 @@ void db_sonar_log_log_hardwired_issue(const char *issue, const char *detail);
 void db_sonar_log_log_hardwired_zero_run_start(void);
 void db_sonar_log_log_hardwired_zero_run_clear(int distance_mm);
 void db_sonar_log_log_deeper_sentence(const char *sentence);
+void db_sonar_log_log_compare(const char *fmt, ...)
+    __attribute__((format(printf, 1, 2)));
 
 void db_sonar_log_note_fc_armed_state(bool armed);
 void db_sonar_log_note_hardwired_poll(void);

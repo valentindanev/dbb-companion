@@ -95,6 +95,14 @@ const sonar_driver_t *sonar_driver_get(sonar_model_t model);
 /* Short id for logging; "unknown" when the model is out of range. */
 const char *sonar_driver_name(sonar_model_t model);
 
+/* Pure guard helpers used by the RMT acquisition path and its host mutation
+ * suite. Keeping them free of ESP-IDF types makes the real guards directly
+ * executable on a workstation. */
+int sonar_pulse_preserve_no_echo(uint32_t echo_us, int scaled_mm);
+uint32_t sonar_pulse_clamp_idle_ceiling(uint32_t width_us,
+                                       uint32_t echo_max_us);
+bool sonar_driver_descriptor_is_complete(const sonar_driver_t *driver);
+
 extern const sonar_driver_t sonar_driver_dyp_l041mtw;
 extern const sonar_driver_t sonar_driver_aj_sr04m;
 extern const sonar_driver_t sonar_driver_aj_sr04m_pulse;

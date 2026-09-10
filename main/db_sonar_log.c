@@ -252,6 +252,7 @@ static char db_log_stream_prefix(db_log_stream_t stream) {
   case DB_LOG_STREAM_TRIP: return 'T';
   case DB_LOG_STREAM_HARDWIRED: return 'H';
   case DB_LOG_STREAM_DEEPER: return 'D';
+  case DB_LOG_STREAM_COMPARE: return 'C';
   default: return '\0';
   }
 }
@@ -350,10 +351,10 @@ typedef struct {
 } db_log_file_slot_t;
 
 /* Indexed by db_log_stream_t. */
-static db_log_file_slot_t g_log_files[DB_LOG_STREAM_DEEPER + 1];
+static db_log_file_slot_t g_log_files[DB_LOG_STREAM_COMPARE + 1];
 
 static db_log_file_slot_t *db_log_slot(db_log_stream_t stream) {
-  if ((int)stream < 0 || (int)stream > (int)DB_LOG_STREAM_DEEPER) return NULL;
+  if ((int)stream < 0 || (int)stream > (int)DB_LOG_STREAM_COMPARE) return NULL;
   return &g_log_files[(int)stream];
 }
 
@@ -376,17 +377,17 @@ static void db_log_close_slot(db_log_file_slot_t *slot) {
 }
 
 static void db_log_close_all_slots_locked(void) {
-  for (int i = 0; i <= (int)DB_LOG_STREAM_DEEPER; ++i)
+  for (int i = 0; i <= (int)DB_LOG_STREAM_COMPARE; ++i)
     db_log_close_slot(&g_log_files[i]);
 }
 
 static void db_log_close_session_slots_locked(void) {
-  for (int i = (int)DB_LOG_STREAM_TRIP; i <= (int)DB_LOG_STREAM_DEEPER; ++i)
+  for (int i = (int)DB_LOG_STREAM_TRIP; i <= (int)DB_LOG_STREAM_COMPARE; ++i)
     db_log_close_slot(&g_log_files[i]);
 }
 
 static void db_log_sync_all_slots_locked(void) {
-  for (int i = 0; i <= (int)DB_LOG_STREAM_DEEPER; ++i)
+  for (int i = 0; i <= (int)DB_LOG_STREAM_COMPARE; ++i)
     db_log_sync_slot(&g_log_files[i]);
 }
 
@@ -421,7 +422,7 @@ static bool db_log_write_slot(db_log_file_slot_t *slot, const char *data,
 /* The idle floor: a stream that stops producing must still reach flash. */
 static void db_log_sync_idle_slots_locked(void) {
   uint32_t now = db_log_now_ms();
-  for (int i = 0; i <= (int)DB_LOG_STREAM_DEEPER; ++i) {
+  for (int i = 0; i <= (int)DB_LOG_STREAM_COMPARE; ++i) {
     db_log_file_slot_t *slot = &g_log_files[i];
     if (slot->fp != NULL && slot->dirty &&
         now - slot->last_sync_ms >= DB_LOG_SYNC_IDLE_MS)
@@ -473,7 +474,7 @@ static size_t db_log_required_free_locked(void) {
 static void db_log_delete_session_files_locked(uint32_t id) {
   char path[40];
   for (db_log_stream_t stream = DB_LOG_STREAM_TRIP;
-       stream <= DB_LOG_STREAM_DEEPER; ++stream) {
+       stream <= DB_LOG_STREAM_COMPARE; ++stream) {
     if (db_log_make_session_path(path, sizeof(path), stream, id, false))
       remove(path);
     if (db_log_make_session_path(path, sizeof(path), stream, id, true))
@@ -744,6 +745,7 @@ static void db_log_finish_session_locked(const char *reason) {
            reason == NULL ? "unknown" : reason,
            (unsigned long)(now - g_session_start_ms), g_session_distance_m);
   db_log_append_final_line_locked(DB_LOG_STREAM_TRIP, g_line_buffer);
+  db_log_append_final_line_locked(DB_LOG_STREAM_COMPARE, g_line_buffer);
 
   /* Every session handle must be synced and closed BEFORE the .TMP -> .LOG
    * rename, or the rename happens under a live stream. */
@@ -752,7 +754,7 @@ static void db_log_finish_session_locked(const char *reason) {
   char from[40];
   char to[40];
   for (db_log_stream_t stream = DB_LOG_STREAM_TRIP;
-       stream <= DB_LOG_STREAM_DEEPER; ++stream) {
+       stream <= DB_LOG_STREAM_COMPARE; ++stream) {
     if (db_log_make_session_path(from, sizeof(from), stream, g_session_id, true) &&
         db_log_make_session_path(to, sizeof(to), stream, g_session_id, false) &&
         db_log_file_size(from) > 0) {
@@ -780,7 +782,7 @@ static uint32_t db_log_recover_and_find_next_locked(void) {
     uint32_t id = 0;
     bool active = false;
     bool matched = false;
-    for (const char *prefix = "THD"; *prefix != '\0'; ++prefix) {
+    for (const char *prefix = "THDC"; *prefix != '\0'; ++prefix) {
       if (db_log_parse_session_name(entry->d_name, *prefix, &id, &active)) {
         matched = true;
         break;
@@ -795,7 +797,9 @@ static uint32_t db_log_recover_and_find_next_locked(void) {
                                    ? DB_LOG_STREAM_TRIP
                                    : entry->d_name[0] == 'H'
                                          ? DB_LOG_STREAM_HARDWIRED
-                                         : DB_LOG_STREAM_DEEPER;
+                                         : entry->d_name[0] == 'D'
+                                               ? DB_LOG_STREAM_DEEPER
+                                               : DB_LOG_STREAM_COMPARE;
       if (db_log_make_session_path(from, sizeof(from), stream, id, true) &&
           db_log_make_session_path(to, sizeof(to), stream, id, false)) {
         remove(to);
@@ -954,12 +958,13 @@ static void db_log_fill_session_info_locked(db_sonar_log_session_info_t *info,
   info->active = active;
   char path[40];
   for (db_log_stream_t stream = DB_LOG_STREAM_TRIP;
-       stream <= DB_LOG_STREAM_DEEPER; ++stream) {
+       stream <= DB_LOG_STREAM_COMPARE; ++stream) {
     db_log_make_session_path(path, sizeof(path), stream, id, active);
     size_t bytes = db_log_file_size(path);
     if (stream == DB_LOG_STREAM_TRIP) info->trip_bytes = bytes;
     else if (stream == DB_LOG_STREAM_HARDWIRED) info->hardwired_bytes = bytes;
-    else info->deeper_bytes = bytes;
+    else if (stream == DB_LOG_STREAM_DEEPER) info->deeper_bytes = bytes;
+    else info->compare_bytes = bytes;
   }
 }
 
@@ -1216,7 +1221,7 @@ esp_err_t db_sonar_log_clear_all(void) {
       uint32_t id;
       bool active;
       bool session_file = false;
-      for (const char *prefix = "THD"; *prefix != '\0'; ++prefix)
+      for (const char *prefix = "THDC"; *prefix != '\0'; ++prefix)
         session_file |= db_log_parse_session_name(entry->d_name, *prefix, &id,
                                                   &active);
       if (session_file) {
@@ -1267,6 +1272,37 @@ esp_err_t db_sonar_log_stop_manual_capture(void) {
   g_manual_until_ms = 0;
   if (g_session_active && !g_armed_capture)
     db_log_finish_session_locked("manual_stop");
+  xSemaphoreGive(g_log_mutex);
+  return ESP_OK;
+}
+
+esp_err_t db_sonar_log_start_compare_capture(uint32_t *out_session_id) {
+  db_log_init_mutex();
+  if (g_log_mutex == NULL) return ESP_ERR_NO_MEM;
+  xSemaphoreTake(g_log_mutex, portMAX_DELAY);
+  if (!g_log_available || g_session_active) {
+    xSemaphoreGive(g_log_mutex);
+    return ESP_ERR_INVALID_STATE;
+  }
+  esp_err_t err = db_log_start_session_locked("sonar_compare_test");
+  if (err == ESP_OK) {
+    g_manual_until_ms = db_log_now_ms() + DB_LOG_MANUAL_MAX_SECONDS * 1000U;
+    if (out_session_id != NULL) *out_session_id = g_session_id;
+  }
+  xSemaphoreGive(g_log_mutex);
+  return err;
+}
+
+esp_err_t db_sonar_log_stop_compare_capture(void) {
+  db_log_init_mutex();
+  if (g_log_mutex == NULL) return ESP_ERR_NO_MEM;
+  xSemaphoreTake(g_log_mutex, portMAX_DELAY);
+  if (!g_session_active || g_armed_capture) {
+    xSemaphoreGive(g_log_mutex);
+    return ESP_ERR_INVALID_STATE;
+  }
+  g_manual_until_ms = 0;
+  db_log_finish_session_locked("sonar_compare_stop");
   xSemaphoreGive(g_log_mutex);
   return ESP_OK;
 }
@@ -1461,6 +1497,14 @@ void db_sonar_log_log_deeper_sentence(const char *sentence) {
   if (!db_log_capture_active() || sentence == NULL) return;
   (void)db_log_appendf(DB_LOG_STREAM_DEEPER,
                        "event=raw_nmea sentence=%s", sentence);
+}
+
+void db_sonar_log_log_compare(const char *fmt, ...) {
+  if (!db_log_capture_active() || fmt == NULL) return;
+  va_list args;
+  va_start(args, fmt);
+  (void)db_log_vappendf(DB_LOG_STREAM_COMPARE, fmt, args);
+  va_end(args);
 }
 
 void db_sonar_log_note_hardwired_poll(void) {

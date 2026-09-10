@@ -16,9 +16,12 @@ set(SRCS
         db_fc_tune.c
         db_netlog.c
         sonar_driver.c
+        sonar_pulse_guards.c
         sonar_dyp_l041mtw.c
         sonar_aj_sr04m.c
         sonar_aj_sr04m_pulse.c
+        sonar_compare_core.c
+        sonar_compare_test.c
         db_ota_policy.c
         dbb_brain_stub.c
 )

@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "db_sonar_log.h"
+#include "sonar_compare_test.h"
 #include "db_esp32_control.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -73,6 +74,7 @@ static void deeper_set_latest_distance(int distance_mm) {
   g_deeper_distance_mm = distance_mm;
   g_deeper_distance_update_ms = now;
   xSemaphoreGive(g_deeper_state_mutex);
+  sonar_compare_test_note_deeper(distance_mm);
 }
 
 static void deeper_set_latest_temperature(int temperature_c_tenths) {

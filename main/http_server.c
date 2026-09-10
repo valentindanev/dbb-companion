@@ -29,6 +29,7 @@
 #include <esp_app_format.h>
 #include <esp_ota_ops.h>
 #include "dbb_brain.h"
+#include "sonar_compare_test.h"
 #include <esp_partition.h>
 #include "esp_http_server.h"
 #include "esp_core_dump.h"
@@ -1779,6 +1780,7 @@ static bool sonar_log_stream_from_name(const char *name,
     else if (strcmp(name, "trip") == 0) *stream = DB_LOG_STREAM_TRIP;
     else if (strcmp(name, "hardwired") == 0) *stream = DB_LOG_STREAM_HARDWIRED;
     else if (strcmp(name, "deeper") == 0) *stream = DB_LOG_STREAM_DEEPER;
+    else if (strcmp(name, "compare") == 0) *stream = DB_LOG_STREAM_COMPARE;
     else return false;
     return true;
 }
@@ -1816,7 +1818,7 @@ static esp_err_t sonar_log_file_get_handler(httpd_req_t *req) {
         }
     }
     uint32_t session_id = (uint32_t)strtoul(session_text, NULL, 10);
-    if (stream >= DB_LOG_STREAM_TRIP && stream <= DB_LOG_STREAM_DEEPER &&
+    if (stream >= DB_LOG_STREAM_TRIP && stream <= DB_LOG_STREAM_COMPARE &&
         session_id == 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
                             "session is required for this log type");
@@ -1884,7 +1886,9 @@ static esp_err_t sonar_log_sessions_get_handler(httpd_req_t *req) {
         cJSON_AddNumberToObject(item, "hardwired_bytes",
                                 sessions[i].hardwired_bytes);
         cJSON_AddNumberToObject(item, "deeper_bytes",
-                                sessions[i].deeper_bytes);
+                                 sessions[i].deeper_bytes);
+        cJSON_AddNumberToObject(item, "compare_bytes",
+                                sessions[i].compare_bytes);
         cJSON_AddItemToArray(items, item);
     }
     char *response = cJSON_PrintUnformatted(root);
@@ -2677,6 +2681,7 @@ esp_err_t start_rest_server(const char *base_path) {
     /* DBB Companion brain: let a linked private brain register its own routes
      * (e.g. the monitor page) BEFORE the catch-all file handler below. No-op in
      * the open base (weak stub). */
+    sonar_compare_test_register_http(server);
     dbb_brain_register_http(server);
 
     /* URI handler for getting web server files */

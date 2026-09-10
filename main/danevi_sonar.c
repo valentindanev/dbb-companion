@@ -12,6 +12,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "sonar_driver.h"
+#include "sonar_compare_test.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -523,9 +524,7 @@ static sonar_read_t danevi_read_pulse(const sonar_driver_t *driver,
    * a measurement. HC-SR04-family modules answer "nothing out there" with a very
    * long pulse, so without this test a no-echo cycle would be published as the
    * deepest reading the window allows instead of as 0. */
-  if (width_us + 4U >= driver->echo_max_us) {
-    width_us = 0;
-  }
+  width_us = sonar_pulse_clamp_idle_ceiling(width_us, driver->echo_max_us);
 
   *out_echo_us = width_us;
   return SONAR_READ_OK;
@@ -556,8 +555,9 @@ static void danevi_sonar_task(void *arg) {
         /* An echo width of 0 is a successful measurement of "no echo" and has
          * to stay a real 0 all the way to the zero-run filter, exactly as a
          * 0 mm UART frame does, or the two links stop being comparable. */
-        distance = driver->scale_us != NULL ? driver->scale_us(echo_us)
-                                            : (int)echo_us;
+        int scaled = driver->scale_us != NULL ? driver->scale_us(echo_us)
+                                              : (int)echo_us;
+        distance = sonar_pulse_preserve_no_echo(echo_us, scaled);
       }
     } else {
       // Clear buffer before sending trigger
@@ -592,7 +592,7 @@ static void danevi_sonar_task(void *arg) {
       db_sonar_log_note_hardwired_frame(distance);
       danevi_sonar_set_distance(distance);
       danevi_log_valid_distance(is_pulse ? NULL : rx_buffer, length, echo_us,
-                                distance);
+                                 distance);
     } else if (outcome == SONAR_READ_REJECTED) {
       db_sonar_log_note_hardwired_bad_frame();
       /* The model's parse() is the authority on validity but cannot say WHY it
@@ -608,6 +608,13 @@ static void danevi_sonar_task(void *arg) {
       danevi_log_no_response();
     }
 
+    if (is_pulse) {
+      danevi_sonar_snapshot_t filtered = {0};
+      (void)danevi_sonar_get_snapshot(&filtered);
+      sonar_compare_test_note_aj(outcome == SONAR_READ_OK, distance, echo_us,
+                                 outcome == SONAR_READ_TIMEOUT, &filtered);
+    }
+
     vTaskDelay(pdMS_TO_TICKS(driver->trigger_interval_ms));
   }
 }
@@ -620,10 +627,7 @@ void danevi_sonar_init(const sonar_driver_t *driver, int tx_pin, int rx_pin) {
    * model must be able to parse a frame, a PULSE model must be able to convert
    * an echo width, and neither check covers the other. */
   if (driver != NULL) {
-    const bool incomplete = driver->link == SONAR_LINK_PULSE
-                                ? driver->scale_us == NULL
-                                : driver->parse == NULL;
-    if (incomplete) {
+    if (!sonar_driver_descriptor_is_complete(driver)) {
       ESP_LOGE(TAG, "Sonar model '%s' is missing its %s handler; falling back to %s",
                driver->name != NULL ? driver->name : "?",
                driver->link == SONAR_LINK_PULSE ? "scale_us" : "parse",

@@ -1099,3 +1099,62 @@ function save_settings() {
 		console.log("Form was not filled out correctly.")
 	}
 }
+
+function compare_text(id, text) {
+	const el = document.getElementById(id);
+	if (el) el.textContent = text;
+}
+
+async function get_sonar_compare_status() {
+	try {
+		const response = await fetch("/api/sonar-compare", {cache: "no-store"});
+		if (!response.ok) return;
+		const d = await response.json();
+		const panel = document.getElementById("sonar_compare_panel");
+		if (!panel) return;
+		panel.hidden = !d.compiled;
+		if (!d.compiled) return;
+		compare_text("compare_state", d.state);
+		compare_text("compare_reason", d.reason);
+		compare_text("compare_aj_raw", d.aj_raw_mm >= 0 ? `${d.aj_raw_mm} mm / ${d.aj_raw_age_ms} ms` : "missing");
+		compare_text("compare_aj_filtered", d.aj_filtered_mm >= 0 ? `${d.aj_filtered_mm} mm / ${d.aj_filtered_age_ms} ms` : "missing");
+		compare_text("compare_aj_echo", `${d.aj_echo_us} us`);
+		compare_text("compare_deeper", d.deeper_mm >= 0 ? `${d.deeper_mm} mm / ${d.deeper_age_ms} ms` : "missing");
+		const paired = d.pair_quality === "paired";
+		compare_text("compare_pair", paired ? `paired / ${d.pair_separation_ms} ms` : d.pair_quality);
+		compare_text("compare_difference", paired ? `${d.difference_mm} mm / ${Number(d.difference_percent).toFixed(1)}% / ${d.agreement ? "agreement" : "difference"}` : "n/a - nothing paired");
+		compare_text("compare_fc_gps", d.fc_latitude || d.fc_longitude ? `${Number(d.fc_latitude).toFixed(7)}, ${Number(d.fc_longitude).toFixed(7)}` : "missing");
+		compare_text("compare_deeper_gps", d.deeper_has_coordinates ? `${Number(d.deeper_latitude).toFixed(7)}, ${Number(d.deeper_longitude).toFixed(7)}` : "missing");
+		compare_text("compare_counters", `AJ ${d.aj_polls} polls / ${d.aj_zeros} zero / ${d.aj_timeouts} timeout; Deeper ${d.deeper_samples}; pairs ${d.valid_pairs}`);
+		compare_text("compare_authority", `${d.output_authority_unchanged ? "unchanged" : "CHANGED"}; source ${d.output_source}; comparison publishes none`);
+	} catch (_) {}
+}
+
+function compare_number(id) {
+	const value = Number(document.getElementById(id).value);
+	return Number.isFinite(value) ? value : 0;
+}
+
+async function start_sonar_compare() {
+	const body = {
+		preflight_complete: document.getElementById("compare_preflight").checked,
+		site: document.getElementById("compare_site").value,
+		bottom: document.getElementById("compare_bottom").value,
+		mount_spacing_mm: compare_number("compare_spacing"),
+		aj_draft_mm: compare_number("compare_aj_draft"),
+		deeper_draft_mm: compare_number("compare_deeper_draft"),
+		water_temp_c: compare_number("compare_temp"),
+		notes: document.getElementById("compare_notes").value
+	};
+	await fetch("/api/sonar-compare/start", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+	get_sonar_compare_status();
+}
+
+async function stop_sonar_compare() {
+	await fetch("/api/sonar-compare/stop", {method: "POST"});
+	get_sonar_compare_status();
+}
+
+function download_sonar_compare() {
+	window.location.href = "/api/sonar-compare/download";
+}

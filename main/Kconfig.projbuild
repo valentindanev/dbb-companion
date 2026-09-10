@@ -170,6 +170,16 @@ menu "DroneBridge for ESP32 Configuration"
             Adds endpoints that deliberately abort the firmware and erase the
             resulting coredump. Never enable this in a deployed build.
 
+    config DB_SONAR_COMPARE_TEST
+        bool "Build the disposable AJ-vs-Deeper water comparison mode"
+        default n
+        help
+            TEST ONLY. Forces the normal Deeper STA boot attempt, runs the
+            AJ-SR04M pulse sensor alongside it, exposes a guarded comparison
+            panel, and records a C#######.LOG raw-observation stream. It does
+            not add an NVS setting and publishes no comparison depth to
+            MAVLink. Leave disabled in every normal firmware image.
+
     config DB_OTA_HEALTH_GATE
         bool "Require the DBB post-OTA health gate"
         depends on BOOTLOADER_APP_ROLLBACK_ENABLE

@@ -55,6 +55,9 @@ void dbb_brain_register_http(void *server);
  */
 void dbb_brain_ota_health(uint32_t *required, uint32_t *passed, uint32_t *failed);
 
+/** True only while a private synthetic NMEA emitter owns UART2/sonar TX. */
+bool dbb_brain_synthetic_uart_nmea_active(void);
+
 #ifdef __cplusplus
 }
 #endif
