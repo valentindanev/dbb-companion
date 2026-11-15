@@ -14,6 +14,32 @@ REST scaffolding.
 This product also includes the fastMAVLink C library (MIT License):
 
   fastMAVLink - https://github.com/olliw42/fastmavlink
+  (c) OlliW, OlliW42, www.olliw.eu
+
+Only fastMAVLink's C library and generated C files are included
+(components/fmav_c_lib_v2). Upstream states that this C code is made available
+under the MIT license; its generator scripts are not included. Upstream ships no
+separate licence file, so the MIT terms are reproduced here:
+
+  Copyright (c) OlliW, OlliW42, www.olliw.eu
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
 
 The dual-sonar stack (hardwired UART sonar + Deeper CHIRP+ Wi-Fi sonar with a
 reverse-engineered protocol), the persistent sonar log, the dual-slot A/B OTA
