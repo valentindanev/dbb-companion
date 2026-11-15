@@ -34,9 +34,7 @@
 
 #define DB_LOG_LINE_MAX 512U
 #define DB_LOG_IO_BUFFER 1024U
-/* Durability, copied from ArduPilot rather than invented - see the block
- * comment above the file-slot helpers. 4096 matches both AP's MAX_IO_SIZE and
- * the LittleFS block size we mount with. */
+/* Preferred spacing for flush boundaries in sequential log writes. */
 #define DB_LOG_SYNC_BLOCK_BYTES 4096U
 /* An idle stream must not hold unsynced data indefinitely. Owner decision
  * 08-09-2026: 5 s. The boat is parked at the bank and the radio put down
@@ -320,30 +318,10 @@ static esp_err_t db_log_refresh_usage_locked(void) {
 
 /* Sum of every file the directory can still name. Compared against
  * g_partition_used, this is the orphaned-cluster detector. */
-/* --- Durable append path ---------------------------------------------------
- *
- * Files are held OPEN for the life of a session and fsynced ON BLOCK
- * BOUNDARIES, never mid-block. This is ArduPilot's shape, copied rather than
- * invented:
- *
- *   AP_Logger_File.cpp:990-1024      hold the fd; truncate the write so the
- *                                    fsync lands exactly on the boundary
- *   AP_Filesystem_FATFS.cpp:693      bytes_until_fsync = block - (pos % block)
- *   AP_Filesystem_FlashMemory_LittleFS.cpp:
- *       "LittleFS needs to copy the block contents to a new one if fsync is
- *        called in the middle of a block. LittleFS also is guaranteed to not
- *        remember any file contents until fsync is called!"
- *
- * What this replaces: an fopen/fwrite/fclose PER LOG LINE, i.e. one filesystem
- * metadata commit per line. Measured on the 04-09-2026 mapping session that
- * was ~7 commits/s (NMEA 5.3 + trip 1.0 + track 0.67) against ArduPilot's
- * 0.11/s for the same byte rate. Every one of those commits was a window in
- * which a power cut could strand a cluster chain - the fault that lost 3.29 MB
- * on 23-08-2026 and 2.50 MB by 08-09-2026.
- *
- * The trade, stated plainly: a power cut now loses up to the last UNSYNCED
- * BLOCK instead of the last LINE. Bounded, known loss in place of unbounded,
- * silent volume loss. */
+/* Keep log files open and split sequential writes at 4 KiB file offsets.
+ * Flushing these chunks batches storage updates instead of syncing every line.
+ * An idle timeout also flushes pending data when a stream goes quiet. A power
+ * interruption can still lose data that has not reached persistent storage. */
 typedef struct {
   FILE *fp;
   uint32_t last_sync_ms;
@@ -391,7 +369,7 @@ static void db_log_sync_all_slots_locked(void) {
     db_log_sync_slot(&g_log_files[i]);
 }
 
-/* ArduPilot AP_Filesystem_*::bytes_until_fsync(). Returns 1..BLOCK. */
+/* Bytes to the next configured flush boundary; zero if ftell fails. */
 static uint32_t db_log_bytes_until_sync(FILE *fp) {
   long pos = ftell(fp);
   if (pos < 0) return 0;
